@@ -169,3 +169,13 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+.DS_Store
+*.log
+checkpoints
+data
+dev_data
+output
+tmp
+venv
+weaviate_data

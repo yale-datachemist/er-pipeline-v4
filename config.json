@@ -1,0 +1,48 @@
+{
+  "input_dir": "data/input",
+  "output_dir": "data/output",
+  "checkpoint_dir": "data/checkpoints",
+  "log_dir": "logs",
+  
+  "save_checkpoints": true,
+  
+  "dev_mode": false,
+  "dev_max_files": 5,
+  "dev_max_rows": 1000,
+  
+  "generate_analysis": true,
+  "analysis_sample_size": 1000,
+  
+  "use_enhanced_features": true,
+  "enhanced_feature_interactions": true,
+  "enhanced_temporal_features": true,
+  "robust_date_handling": true,
+  "fuzzy_year_threshold": 5,
+  
+  "embedding_model": "text-embedding-3-small",
+  "embedding_batch_size": 100,
+  "embedding_chunk_size": 8192,
+  "embedding_dimension": 1536,
+  
+  "weaviate_url": "http://localhost:8080",
+  "weaviate_batch_size": 100,
+  "weaviate_timeout": 300,
+  
+  "train_test_split": 0.8,
+  "random_seed": 42,
+  "learning_rate": 0.01,
+  "num_iterations": 1000,
+  "regularization": 0.01,
+  "feature_normalization": true,
+  "confidence_threshold": 0.7,
+  "candidate_limit": 100,
+  "classification_batch_size": 1000,
+  
+  "use_llm_fallback": false,
+  "llm_model": "gpt-4o",
+  "max_llm_requests": 1000,
+  
+  "ground_truth_path": "data/input/ground_truth.csv",
+  
+  "log_level": "INFO"
+}

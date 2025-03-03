@@ -1,0 +1,1262 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Analysis and reporting module for the entity resolution pipeline.
+Provides detailed insights and visualizations for each stage.
+"""
+
+import json
+import logging
+import os
+import re
+import time
+from collections import Counter, defaultdict
+from typing import Dict, List, Any, Tuple, Set, Optional
+
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import seaborn as sns
+from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE
+from sklearn.metrics import confusion_matrix, roc_curve, precision_recall_curve, auc
+from tqdm import tqdm
+
+from utils import save_output
+
+# Configure logging
+logger = logging.getLogger(__name__)
+
+
+class AnalysisReporter:
+    """Class for generating analysis reports at each pipeline stage."""
+    
+    def __init__(self, config: Dict[str, Any]):
+        """
+        Initialize the reporter.
+        
+        Args:
+            config: Configuration dictionary
+        """
+        self.config = config
+        self.output_dir = config.get("output_dir", "data/output")
+        self.report_dir = os.path.join(self.output_dir, "reports")
+        os.makedirs(self.report_dir, exist_ok=True)
+        
+        # Create directory for figures
+        self.figures_dir = os.path.join(self.report_dir, "figures")
+        os.makedirs(self.figures_dir, exist_ok=True)
+        
+        logger.info(f"Initialized analysis reporter with output directory: {self.report_dir}")
+    
+    def analyze_preprocessing(
+        self,
+        unique_strings: Dict[str, str],
+        string_counts: Dict[str, int],
+        record_field_hashes: Dict[str, Dict[str, str]],
+        field_hash_mapping: Dict[str, Dict[str, int]]
+    ) -> Dict[str, Any]:
+        """
+        Analyze preprocessing results.
+        
+        Args:
+            unique_strings: Dictionary of hash → string value
+            string_counts: Dictionary of hash → frequency count
+            record_field_hashes: Dictionary of record ID → {field → hash}
+            field_hash_mapping: Dictionary of hash → {field → count}
+        
+        Returns:
+            Analysis results
+        """
+        logger.info("Analyzing preprocessing results")
+        
+        # Basic statistics
+        total_records = len(record_field_hashes)
+        total_unique_strings = len(unique_strings)
+        
+        # Field statistics
+        field_stats = {
+            "record": {"count": 0, "null_count": 0, "unique_count": 0},
+            "person": {"count": 0, "null_count": 0, "unique_count": 0},
+            "roles": {"count": 0, "null_count": 0, "unique_count": 0},
+            "title": {"count": 0, "null_count": 0, "unique_count": 0},
+            "attribution": {"count": 0, "null_count": 0, "unique_count": 0},
+            "provision": {"count": 0, "null_count": 0, "unique_count": 0},
+            "subjects": {"count": 0, "null_count": 0, "unique_count": 0},
+            "genres": {"count": 0, "null_count": 0, "unique_count": 0},
+            "relatedWork": {"count": 0, "null_count": 0, "unique_count": 0}
+        }
+        
+        # Calculate field statistics
+        field_hashes = {field: set() for field in field_stats}
+        
+        for record_id, fields in record_field_hashes.items():
+            for field, hash_value in fields.items():
+                if field in field_stats:
+                    field_stats[field]["count"] += 1
+                    if hash_value == "NULL":
+                        field_stats[field]["null_count"] += 1
+                    else:
+                        field_hashes[field].add(hash_value)
+        
+        # Calculate unique counts
+        for field, hashes in field_hashes.items():
+            field_stats[field]["unique_count"] = len(hashes)
+        
+        # String frequency distribution
+        frequency_counts = Counter(string_counts.values())
+        frequency_distribution = {
+            "1": frequency_counts.get(1, 0),
+            "2-5": sum(frequency_counts.get(i, 0) for i in range(2, 6)),
+            "6-10": sum(frequency_counts.get(i, 0) for i in range(6, 11)),
+            "11-50": sum(frequency_counts.get(i, 0) for i in range(11, 51)),
+            "51-100": sum(frequency_counts.get(i, 0) for i in range(51, 101)),
+            "101-500": sum(frequency_counts.get(i, 0) for i in range(101, 501)),
+            "501+": sum(frequency_counts.get(i, 0) for i in range(501, 10000000))
+        }
+        
+        # Person name analysis
+        person_lengths = []
+        has_life_dates_count = 0
+        
+        for hash_value, field_counts in field_hash_mapping.items():
+            if "person" in field_counts:
+                person_str = unique_strings.get(hash_value, "")
+                person_lengths.append(len(person_str))
+                if re.search(r'\d{4}-\d{4}', person_str):
+                    has_life_dates_count += 1
+        
+        # Create visualizations
+        self._create_field_stats_chart(field_stats)
+        self._create_string_frequency_chart(frequency_distribution)
+        self._create_person_length_histogram(person_lengths)
+        
+        # Compile results
+        results = {
+            "total_records": total_records,
+            "total_unique_strings": total_unique_strings,
+            "field_statistics": field_stats,
+            "string_frequency_distribution": frequency_distribution,
+            "person_name_analysis": {
+                "total_unique_persons": field_stats["person"]["unique_count"],
+                "average_name_length": np.mean(person_lengths) if person_lengths else 0,
+                "with_life_dates": has_life_dates_count,
+                "without_life_dates": field_stats["person"]["unique_count"] - has_life_dates_count
+            }
+        }
+        
+        # Save report
+        self._save_report("preprocessing_analysis.json", results)
+        
+        return results
+    
+    def analyze_embeddings(
+        self,
+        embeddings: Dict[str, List[float]],
+        field_hash_mapping: Dict[str, Dict[str, int]],
+        sample_size: int = 1000
+    ) -> Dict[str, Any]:
+        """
+        Analyze embedding results.
+        
+        Args:
+            embeddings: Dictionary of hash → embedding vector
+            field_hash_mapping: Dictionary of hash → {field → count}
+            sample_size: Number of embeddings to sample for visualization
+        
+        Returns:
+            Analysis results
+        """
+        logger.info("Analyzing embedding results")
+        
+        # Basic statistics
+        total_embeddings = len(embeddings)
+        
+        # Calculate embeddings per field type
+        field_embeddings = defaultdict(int)
+        for hash_value, fields in field_hash_mapping.items():
+            if hash_value in embeddings:
+                for field in fields:
+                    field_embeddings[field] += 1
+        
+        # Vector statistics
+        embedding_lengths = []
+        for vector in embeddings.values():
+            if vector:
+                embedding_lengths.append(np.linalg.norm(vector))
+        
+        # Sample embeddings for visualization
+        if len(embeddings) > sample_size:
+            sample_keys = np.random.choice(list(embeddings.keys()), sample_size, replace=False)
+            sample_embeddings = {k: embeddings[k] for k in sample_keys}
+        else:
+            sample_embeddings = embeddings
+        
+        # Dimensionality reduction for visualization if enough samples
+        if len(sample_embeddings) >= 10:
+            # Create a matrix of embeddings
+            embedding_matrix = np.array(list(sample_embeddings.values()))
+            
+            # PCA
+            try:
+                pca = PCA(n_components=2)
+                pca_result = pca.fit_transform(embedding_matrix)
+                
+                # Create PCA visualization
+                self._create_embedding_scatter_plot(
+                    pca_result, 
+                    "PCA", 
+                    "pca_embeddings.png"
+                )
+                
+                # Explained variance
+                explained_variance = pca.explained_variance_ratio_.sum()
+            except Exception as e:
+                logger.error(f"Error performing PCA: {e}")
+                pca_result = None
+                explained_variance = 0
+            
+            # t-SNE (only if enough samples)
+            if len(sample_embeddings) >= 50:
+                try:
+                    tsne = TSNE(n_components=2, random_state=42)
+                    tsne_result = tsne.fit_transform(embedding_matrix)
+                    
+                    # Create t-SNE visualization
+                    self._create_embedding_scatter_plot(
+                        tsne_result,
+                        "t-SNE",
+                        "tsne_embeddings.png"
+                    )
+                except Exception as e:
+                    logger.error(f"Error performing t-SNE: {e}")
+                    tsne_result = None
+        
+        # Compile results
+        results = {
+            "total_embeddings": total_embeddings,
+            "embeddings_by_field": dict(field_embeddings),
+            "vector_statistics": {
+                "min_length": min(embedding_lengths) if embedding_lengths else 0,
+                "max_length": max(embedding_lengths) if embedding_lengths else 0,
+                "avg_length": np.mean(embedding_lengths) if embedding_lengths else 0,
+                "std_length": np.std(embedding_lengths) if embedding_lengths else 0
+            },
+            "pca_explained_variance": explained_variance if 'explained_variance' in locals() else 0
+        }
+        
+        # Save report
+        self._save_report("embedding_analysis.json", results)
+        
+        return results
+    
+    def analyze_indexing(
+        self,
+        weaviate_client: Any,
+        field_types: List[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Analyze Weaviate indexing results.
+        
+        Args:
+            weaviate_client: Weaviate client
+            field_types: List of field types
+        
+        Returns:
+            Analysis results
+        """
+        logger.info("Analyzing indexing results")
+        
+        if field_types is None:
+            field_types = [
+                "record", "person", "roles", "title", "attribution",
+                "provision", "subjects", "genres", "relatedWork"
+            ]
+        
+        # Check if client is connected
+        if not weaviate_client:
+            logger.error("Weaviate client not provided")
+            return {"error": "Weaviate client not provided"}
+        
+        try:
+            # Get collection statistics
+            collection = weaviate_client.collections.get("UniqueStringsByField")
+            
+            # Get total count
+            total_objects = collection.query.fetch_objects(limit=1).total_count
+            
+            # Get counts by field type
+            field_counts = {}
+            for field in field_types:
+                try:
+                    from weaviate.classes.query import Filter
+                    field_filter = Filter.by_property("field_type").equal(field)
+                    count = collection.query.fetch_objects(
+                        filters=field_filter,
+                        limit=1
+                    ).total_count
+                    field_counts[field] = count
+                except Exception as e:
+                    logger.error(f"Error getting count for field {field}: {e}")
+                    field_counts[field] = 0
+            
+            # Create field count visualization
+            self._create_field_count_chart(field_counts)
+            
+            # Compile results
+            results = {
+                "total_indexed_objects": total_objects,
+                "objects_by_field_type": field_counts
+            }
+            
+            # Save report
+            self._save_report("indexing_analysis.json", results)
+            
+            return results
+        
+        except Exception as e:
+            logger.error(f"Error analyzing Weaviate index: {e}")
+            return {"error": str(e)}
+    
+    def analyze_features(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        feature_names: List[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Analyze feature engineering results.
+        
+        Args:
+            X: Feature matrix
+            y: Target labels
+            feature_names: Names of features
+        
+        Returns:
+            Analysis results
+        """
+        logger.info("Analyzing feature engineering results")
+        
+        if feature_names is None:
+            feature_names = [
+                'record_sim', 'person_sim', 'roles_sim', 'title_sim', 'attribution_sim',
+                'provision_sim', 'subjects_sim', 'genres_sim', 'relatedWork_sim',
+                'person_lev_sim', 'has_life_dates', 'temporal_overlap'
+            ]
+            
+            # Adjust if dimensions don't match
+            if len(feature_names) != X.shape[1]:
+                feature_names = [f"feature_{i}" for i in range(X.shape[1])]
+        
+        # Basic statistics
+        num_samples, num_features = X.shape
+        num_positive = np.sum(y)
+        num_negative = num_samples - num_positive
+        class_balance = num_positive / num_samples
+        
+        # Feature statistics
+        feature_stats = {}
+        for i, name in enumerate(feature_names):
+            feature_stats[name] = {
+                "min": float(np.min(X[:, i])),
+                "max": float(np.max(X[:, i])),
+                "mean": float(np.mean(X[:, i])),
+                "std": float(np.std(X[:, i])),
+                "median": float(np.median(X[:, i]))
+            }
+        
+        # Feature correlation
+        correlation_matrix = np.corrcoef(X.T)
+        
+        # Feature distributions by class
+        class_distributions = {}
+        for i, name in enumerate(feature_names):
+            class_distributions[name] = {
+                "positive": float(np.mean(X[y == 1, i])),
+                "negative": float(np.mean(X[y == 0, i])),
+                "difference": float(np.mean(X[y == 1, i]) - np.mean(X[y == 0, i]))
+            }
+        
+        # Feature importance (simple difference between class means)
+        feature_importance = {
+            name: abs(class_distributions[name]["difference"])
+            for name in feature_names
+        }
+        
+        # Create visualizations
+        self._create_feature_importance_chart(feature_importance)
+        self._create_feature_correlation_heatmap(correlation_matrix, feature_names)
+        self._create_feature_distribution_chart(X, y, feature_names)
+        
+        # Compile results
+        results = {
+            "sample_statistics": {
+                "num_samples": int(num_samples),
+                "num_features": int(num_features),
+                "num_positive": int(num_positive),
+                "num_negative": int(num_negative),
+                "class_balance": float(class_balance)
+            },
+            "feature_statistics": feature_stats,
+            "class_distributions": class_distributions,
+            "feature_importance": feature_importance
+        }
+        
+        # Save report
+        self._save_report("feature_analysis.json", results)
+        
+        return results
+    
+    def analyze_classification(
+        self,
+        classifier: Any,
+        X_test: np.ndarray,
+        y_test: np.ndarray,
+        feature_names: List[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Analyze classification results.
+        
+        Args:
+            classifier: Trained classifier
+            X_test: Test feature matrix
+            y_test: Test labels
+            feature_names: Names of features
+        
+        Returns:
+            Analysis results
+        """
+        logger.info("Analyzing classification results")
+        
+        if feature_names is None:
+            feature_names = [
+                'record_sim', 'person_sim', 'roles_sim', 'title_sim', 'attribution_sim',
+                'provision_sim', 'subjects_sim', 'genres_sim', 'relatedWork_sim',
+                'person_lev_sim', 'has_life_dates', 'temporal_overlap'
+            ]
+            
+            # Adjust if dimensions don't match
+            if len(feature_names) != X_test.shape[1]:
+                feature_names = [f"feature_{i}" for i in range(X_test.shape[1])]
+        
+        # Make predictions
+        y_pred_proba = classifier.predict_proba(X_test)
+        y_pred = (y_pred_proba >= 0.5).astype(int)
+        
+        # Confusion matrix
+        cm = confusion_matrix(y_test, y_pred)
+        
+        # Calculate metrics
+        tn, fp, fn, tp = cm.ravel()
+        
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
+        accuracy = (tp + tn) / (tp + tn + fp + fn)
+        
+        # ROC curve
+        fpr, tpr, _ = roc_curve(y_test, y_pred_proba)
+        roc_auc = auc(fpr, tpr)
+        
+        # Precision-Recall curve
+        precision_curve, recall_curve, _ = precision_recall_curve(y_test, y_pred_proba)
+        pr_auc = auc(recall_curve, precision_curve)
+        
+        # Misclassified examples analysis
+        misclassified_indices = np.where(y_test != y_pred)[0]
+        
+        # Feature importance from classifier weights
+        weights = classifier.weights
+        feature_importance = {
+            name: abs(weight)
+            for name, weight in zip(feature_names, weights)
+        }
+        
+        # Create visualizations
+        self._create_confusion_matrix_plot(cm)
+        self._create_roc_curve_plot(fpr, tpr, roc_auc)
+        self._create_pr_curve_plot(recall_curve, precision_curve, pr_auc)
+        self._create_classification_feature_importance(feature_importance)
+        
+        # Compile results
+        results = {
+            "confusion_matrix": {
+                "true_negative": int(tn),
+                "false_positive": int(fp),
+                "false_negative": int(fn),
+                "true_positive": int(tp)
+            },
+            "metrics": {
+                "accuracy": float(accuracy),
+                "precision": float(precision),
+                "recall": float(recall),
+                "f1_score": float(f1),
+                "roc_auc": float(roc_auc),
+                "pr_auc": float(pr_auc)
+            },
+            "misclassification_analysis": {
+                "num_misclassified": int(len(misclassified_indices)),
+                "misclassification_rate": float(len(misclassified_indices) / len(y_test))
+            },
+            "feature_importance": feature_importance
+        }
+        
+        # Save report
+        self._save_report("classification_analysis.json", results)
+        
+        return results
+    
+    def analyze_clustering(
+        self,
+        entity_clusters: List[Dict[str, Any]],
+        ground_truth_pairs: List[Tuple[str, str, bool]] = None
+    ) -> Dict[str, Any]:
+        """
+        Analyze clustering results.
+        
+        Args:
+            entity_clusters: List of entity clusters
+            ground_truth_pairs: Ground truth pairs (optional)
+        
+        Returns:
+            Analysis results
+        """
+        logger.info("Analyzing clustering results")
+        
+        # Basic statistics
+        num_clusters = len(entity_clusters)
+        
+        # Size statistics
+        cluster_sizes = [cluster["size"] for cluster in entity_clusters]
+        
+        # Confidence statistics
+        confidence_values = [cluster["confidence"] for cluster in entity_clusters]
+        
+        # Cluster size distribution
+        size_distribution = {
+            "1": sum(1 for size in cluster_sizes if size == 1),
+            "2-5": sum(1 for size in cluster_sizes if 2 <= size <= 5),
+            "6-10": sum(1 for size in cluster_sizes if 6 <= size <= 10),
+            "11-50": sum(1 for size in cluster_sizes if 11 <= size <= 50),
+            "51-100": sum(1 for size in cluster_sizes if 51 <= size <= 100),
+            "101+": sum(1 for size in cluster_sizes if size > 100)
+        }
+        
+        # Confidence distribution
+        confidence_distribution = {
+            "0.0-0.2": sum(1 for conf in confidence_values if 0.0 <= conf < 0.2),
+            "0.2-0.4": sum(1 for conf in confidence_values if 0.2 <= conf < 0.4),
+            "0.4-0.6": sum(1 for conf in confidence_values if 0.4 <= conf < 0.6),
+            "0.6-0.8": sum(1 for conf in confidence_values if 0.6 <= conf < 0.8),
+            "0.8-1.0": sum(1 for conf in confidence_values if 0.8 <= conf <= 1.0)
+        }
+        
+        # Create visualizations
+        self._create_cluster_size_histogram(cluster_sizes)
+        self._create_confidence_histogram(confidence_values)
+        self._create_size_vs_confidence_scatter(cluster_sizes, confidence_values)
+        
+        # Compile results
+        results = {
+            "cluster_statistics": {
+                "num_clusters": num_clusters,
+                "min_cluster_size": min(cluster_sizes) if cluster_sizes else 0,
+                "max_cluster_size": max(cluster_sizes) if cluster_sizes else 0,
+                "avg_cluster_size": np.mean(cluster_sizes) if cluster_sizes else 0,
+                "median_cluster_size": np.median(cluster_sizes) if cluster_sizes else 0,
+                "singleton_clusters": size_distribution["1"],
+                "total_records_clustered": sum(cluster_sizes)
+            },
+            "confidence_statistics": {
+                "min_confidence": min(confidence_values) if confidence_values else 0,
+                "max_confidence": max(confidence_values) if confidence_values else 0,
+                "avg_confidence": np.mean(confidence_values) if confidence_values else 0,
+                "median_confidence": np.median(confidence_values) if confidence_values else 0
+            },
+            "size_distribution": size_distribution,
+            "confidence_distribution": confidence_distribution
+        }
+        
+        # Save report
+        self._save_report("clustering_analysis.json", results)
+        
+        return results
+    
+    def analyze_pipeline(
+        self,
+        pipeline_metrics: Dict[str, Any],
+        stage_timings: Dict[str, float]
+    ) -> Dict[str, Any]:
+        """
+        Analyze overall pipeline performance.
+        
+        Args:
+            pipeline_metrics: Pipeline performance metrics
+            stage_timings: Timing information for each stage
+        
+        Returns:
+            Analysis results
+        """
+        logger.info("Analyzing overall pipeline performance")
+        
+        # Calculate timing percentages
+        total_time = sum(stage_timings.values())
+        timing_percentages = {
+            stage: (time / total_time) * 100
+            for stage, time in stage_timings.items()
+        }
+        
+        # Create timing visualization
+        self._create_pipeline_timing_chart(stage_timings)
+        
+        # Compile results
+        results = {
+            "overall_metrics": pipeline_metrics,
+            "timing_statistics": {
+                "total_runtime": total_time,
+                "stage_timings": stage_timings,
+                "timing_percentages": timing_percentages
+            }
+        }
+        
+        # Save report
+        self._save_report("pipeline_analysis.json", results)
+        
+        return results
+    
+    def generate_comprehensive_report(self) -> Dict[str, Any]:
+        """
+        Generate a comprehensive report combining all analyses.
+        
+        Returns:
+            Comprehensive report
+        """
+        logger.info("Generating comprehensive report")
+        
+        # Load individual reports
+        reports = {}
+        report_files = [
+            "preprocessing_analysis.json",
+            "embedding_analysis.json",
+            "indexing_analysis.json",
+            "feature_analysis.json",
+            "classification_analysis.json",
+            "clustering_analysis.json",
+            "pipeline_analysis.json"
+        ]
+        
+        for file in report_files:
+            try:
+                with open(os.path.join(self.report_dir, file), 'r') as f:
+                    reports[file.replace("_analysis.json", "")] = json.load(f)
+            except FileNotFoundError:
+                logger.warning(f"Report file not found: {file}")
+        
+        # Compile comprehensive report
+        comprehensive_report = {
+            "summary": {
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "available_reports": list(reports.keys())
+            },
+            "reports": reports
+        }
+        
+        # Save comprehensive report
+        self._save_report("comprehensive_report.json", comprehensive_report)
+        
+        return comprehensive_report
+    
+    def _save_report(self, filename: str, data: Dict[str, Any]) -> None:
+        """
+        Save report to a file.
+        
+        Args:
+            filename: Report filename
+            data: Report data
+        """
+        file_path = os.path.join(self.report_dir, filename)
+        
+        with open(file_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        
+        logger.info(f"Saved report: {file_path}")
+    
+    def _create_field_stats_chart(self, field_stats: Dict[str, Dict[str, int]]) -> None:
+        """
+        Create field statistics chart.
+        
+        Args:
+            field_stats: Field statistics
+        """
+        # Prepare data
+        fields = list(field_stats.keys())
+        total_counts = [field_stats[field]["count"] for field in fields]
+        null_counts = [field_stats[field]["null_count"] for field in fields]
+        unique_counts = [field_stats[field]["unique_count"] for field in fields]
+        
+        # Create figure
+        plt.figure(figsize=(12, 6))
+        
+        # Create grouped bar chart
+        x = np.arange(len(fields))
+        width = 0.25
+        
+        plt.bar(x - width, total_counts, width, label='Total')
+        plt.bar(x, null_counts, width, label='Null')
+        plt.bar(x + width, unique_counts, width, label='Unique')
+        
+        plt.xlabel('Fields')
+        plt.ylabel('Count')
+        plt.title('Field Statistics')
+        plt.xticks(x, fields, rotation=45, ha='right')
+        plt.legend()
+        plt.tight_layout()
+        
+        # Save figure
+        plt.savefig(os.path.join(self.figures_dir, "field_statistics.png"))
+        plt.close()
+    
+    def _create_string_frequency_chart(self, frequency_distribution: Dict[str, int]) -> None:
+        """
+        Create string frequency chart.
+        
+        Args:
+            frequency_distribution: Frequency distribution
+        """
+        # Prepare data
+        categories = list(frequency_distribution.keys())
+        counts = list(frequency_distribution.values())
+        
+        # Create figure
+        plt.figure(figsize=(10, 6))
+        
+        # Create bar chart
+        plt.bar(categories, counts)
+        
+        plt.xlabel('Frequency Range')
+        plt.ylabel('Count')
+        plt.title('String Frequency Distribution')
+        plt.tight_layout()
+        
+        # Save figure
+        plt.savefig(os.path.join(self.figures_dir, "string_frequency.png"))
+        plt.close()
+    
+    def _create_person_length_histogram(self, person_lengths: List[int]) -> None:
+        """
+        Create person name length histogram.
+        
+        Args:
+            person_lengths: List of person name lengths
+        """
+        if not person_lengths:
+            logger.warning("No person lengths provided")
+            return
+        
+        # Create figure
+        plt.figure(figsize=(10, 6))
+        
+        # Create histogram
+        plt.hist(person_lengths, bins=30, edgecolor='black')
+        
+        plt.xlabel('Name Length')
+        plt.ylabel('Count')
+        plt.title('Person Name Length Distribution')
+        plt.tight_layout()
+        
+        # Save figure
+        plt.savefig(os.path.join(self.figures_dir, "person_length_histogram.png"))
+        plt.close()
+    
+    def _create_embedding_scatter_plot(
+        self,
+        embedding_result: np.ndarray,
+        method: str,
+        filename: str
+    ) -> None:
+        """
+        Create embedding scatter plot.
+        
+        Args:
+            embedding_result: Dimensionality reduction result
+            method: Dimensionality reduction method
+            filename: Output filename
+        """
+        # Create figure
+        plt.figure(figsize=(10, 8))
+        
+        # Create scatter plot
+        plt.scatter(embedding_result[:, 0], embedding_result[:, 1], alpha=0.5)
+        
+        plt.xlabel(f'{method} Component 1')
+        plt.ylabel(f'{method} Component 2')
+        plt.title(f'{method} Visualization of Embeddings')
+        plt.tight_layout()
+        
+        # Save figure
+        plt.savefig(os.path.join(self.figures_dir, filename))
+        plt.close()
+    
+    def _create_field_count_chart(self, field_counts: Dict[str, int]) -> None:
+        """
+        Create field count chart.
+        
+        Args:
+            field_counts: Field counts
+        """
+        # Prepare data
+        fields = list(field_counts.keys())
+        counts = list(field_counts.values())
+        
+        # Create figure
+        plt.figure(figsize=(12, 6))
+        
+        # Create bar chart
+        plt.bar(fields, counts)
+        
+        plt.xlabel('Field Type')
+        plt.ylabel('Count')
+        plt.title('Objects by Field Type')
+        plt.xticks(rotation=45, ha='right')
+        plt.tight_layout()
+        
+        # Save figure
+        plt.savefig(os.path.join(self.figures_dir, "field_counts.png"))
+        plt.close()
+    
+    def _create_feature_importance_chart(self, feature_importance: Dict[str, float]) -> None:
+        """
+        Create feature importance chart.
+        
+        Args:
+            feature_importance: Feature importance scores
+        """
+        # Prepare data
+        sorted_features = sorted(
+            feature_importance.items(),
+            key=lambda x: x[1],
+            reverse=True
+        )
+        
+        features = [item[0] for item in sorted_features]
+        importance = [item[1] for item in sorted_features]
+        
+        # Create figure
+        plt.figure(figsize=(12, 6))
+        
+        # Create bar chart
+        plt.bar(features, importance)
+        
+        plt.xlabel('Feature')
+        plt.ylabel('Importance')
+        plt.title('Feature Importance')
+        plt.xticks(rotation=45, ha='right')
+        plt.tight_layout()
+        
+        # Save figure
+        plt.savefig(os.path.join(self.figures_dir, "feature_importance.png"))
+        plt.close()
+    
+    def _create_feature_correlation_heatmap(
+        self,
+        correlation_matrix: np.ndarray,
+        feature_names: List[str]
+    ) -> None:
+        """
+        Create feature correlation heatmap.
+        
+        Args:
+            correlation_matrix: Correlation matrix
+            feature_names: Feature names
+        """
+        # Create figure
+        plt.figure(figsize=(12, 10))
+        
+        # Create heatmap
+        sns.heatmap(
+            correlation_matrix,
+            annot=True,
+            cmap='coolwarm',
+            xticklabels=feature_names,
+            yticklabels=feature_names,
+            vmin=-1,
+            vmax=1
+        )
+        
+        plt.title('Feature Correlation Matrix')
+        plt.tight_layout()
+        
+        # Save figure
+        plt.savefig(os.path.join(self.figures_dir, "feature_correlation.png"))
+        plt.close()
+    
+    def _create_feature_distribution_chart(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        feature_names: List[str],
+        max_features: int = 6
+    ) -> None:
+        """
+        Create feature distribution chart.
+        
+        Args:
+            X: Feature matrix
+            y: Target labels
+            feature_names: Feature names
+            max_features: Maximum number of features to display
+        """
+        # Limit the number of features to display
+        if len(feature_names) > max_features:
+            # Select the most important features
+            feature_means = np.array([
+                abs(np.mean(X[y == 1, i]) - np.mean(X[y == 0, i]))
+                for i in range(len(feature_names))
+            ])
+            
+            # Get indices of top features
+            top_indices = np.argsort(feature_means)[-max_features:]
+            selected_features = [feature_names[i] for i in top_indices]
+            selected_indices = top_indices
+        else:
+            selected_features = feature_names
+            selected_indices = list(range(len(feature_names)))
+        
+        # Create figure
+        fig, axes = plt.subplots(nrows=len(selected_features), figsize=(10, 3*len(selected_features)))
+        
+        if len(selected_features) == 1:
+            axes = [axes]
+        
+        # Create distribution plots
+        for i, (feature_idx, ax) in enumerate(zip(selected_indices, axes)):
+            feature_values_pos = X[y == 1, feature_idx]
+            feature_values_neg = X[y == 0, feature_idx]
+            
+            sns.histplot(feature_values_pos, ax=ax, color='blue', alpha=0.5, label='Match')
+            sns.histplot(feature_values_neg, ax=ax, color='red', alpha=0.5, label='Non-match')
+            
+            ax.set_title(f'Distribution of {selected_features[i]}')
+            ax.set_xlabel('Value')
+            ax.set_ylabel('Count')
+            ax.legend()
+        
+        plt.tight_layout()
+        
+        # Save figure
+        plt.savefig(os.path.join(self.figures_dir, "feature_distributions.png"))
+        plt.close()
+    
+    def _create_confusion_matrix_plot(self, cm: np.ndarray) -> None:
+        """
+        Create confusion matrix plot.
+        
+        Args:
+            cm: Confusion matrix
+        """
+        # Create figure
+        plt.figure(figsize=(8, 6))
+        
+        # Create heatmap
+        sns.heatmap(
+            cm,
+            annot=True,
+            fmt='d',
+            cmap='Blues',
+            xticklabels=['Non-match', 'Match'],
+            yticklabels=['Non-match', 'Match']
+        )
+        
+        plt.xlabel('Predicted')
+        plt.ylabel('Actual')
+        plt.title('Confusion Matrix')
+        plt.tight_layout()
+        
+        # Save figure
+        plt.savefig(os.path.join(self.figures_dir, "confusion_matrix.png"))
+        plt.close()
+    
+    def _create_roc_curve_plot(
+        self,
+        fpr: np.ndarray,
+        tpr: np.ndarray,
+        roc_auc: float
+    ) -> None:
+        """
+        Create ROC curve plot.
+        
+        Args:
+            fpr: False positive rates
+            tpr: True positive rates
+            roc_auc: ROC AUC score
+        """
+        # Create figure
+        plt.figure(figsize=(8, 6))
+        
+        # Create ROC curve
+        plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (area = {roc_auc:.2f})')
+        plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+        
+        plt.xlim([0.0, 1.0])
+        plt.ylim([0.0, 1.05])
+        plt.xlabel('False Positive Rate')
+        plt.ylabel('True Positive Rate')
+        plt.title('Receiver Operating Characteristic (ROC) Curve')
+        plt.legend(loc="lower right")
+        plt.tight_layout()
+        
+        # Save figure
+        plt.savefig(os.path.join(self.figures_dir, "roc_curve.png"))
+        plt.close()
+    
+    def _create_pr_curve_plot(
+        self,
+        recall: np.ndarray,
+        precision: np.ndarray,
+        pr_auc: float
+    ) -> None:
+        """
+        Create precision-recall curve plot.
+        
+        Args:
+            recall: Recall values
+            precision: Precision values
+            pr_auc: Precision-recall AUC
+        """
+        # Create figure
+        plt.figure(figsize=(8, 6))
+        
+        # Create precision-recall curve
+        plt.plot(recall, precision, color='green', lw=2, label=f'PR curve (area = {pr_auc:.2f})')
+        
+        plt.xlim([0.0, 1.0])
+        plt.ylim([0.0, 1.05])
+        plt.xlabel('Recall')
+        plt.ylabel('Precision')
+        plt.title('Precision-Recall Curve')
+        plt.legend(loc="lower left")
+        plt.tight_layout()
+        
+        # Save figure
+        plt.savefig(os.path.join(self.figures_dir, "pr_curve.png"))
+        plt.close()
+    
+    def _create_classification_feature_importance(self, feature_importance: Dict[str, float]) -> None:
+        """
+        Create classifier feature importance chart.
+        
+        Args:
+            feature_importance: Feature importance scores
+        """
+        # Prepare data
+        sorted_features = sorted(
+            feature_importance.items(),
+            key=lambda x: x[1],
+            reverse=True
+        )
+        
+        features = [item[0] for item in sorted_features]
+        importance = [item[1] for item in sorted_features]
+        
+        # Create figure
+        plt.figure(figsize=(12, 6))
+        
+        # Create bar chart
+        plt.bar(features, importance)
+        
+        plt.xlabel('Feature')
+        plt.ylabel('Weight Magnitude')
+        plt.title('Classifier Feature Importance')
+        plt.xticks(rotation=45, ha='right')
+        plt.tight_layout()
+        
+        # Save figure
+        plt.savefig(os.path.join(self.figures_dir, "classifier_feature_importance.png"))
+        plt.close()
+    
+    def _create_cluster_size_histogram(self, cluster_sizes: List[int]) -> None:
+        """
+        Create cluster size histogram.
+        
+        Args:
+            cluster_sizes: Cluster sizes
+        """
+        # Create figure
+        plt.figure(figsize=(10, 6))
+        
+        # Create histogram
+        plt.hist(cluster_sizes, bins=30, edgecolor='black')
+        
+        plt.xlabel('Cluster Size')
+        plt.ylabel('Count')
+        plt.title('Cluster Size Distribution')
+        plt.tight_layout()
+        
+        # Save figure
+        plt.savefig(os.path.join(self.figures_dir, "cluster_size_histogram.png"))
+        plt.close()
+    
+    def _create_confidence_histogram(self, confidence_values: List[float]) -> None:
+        """
+        Create confidence histogram.
+        
+        Args:
+            confidence_values: Confidence values
+        """
+        # Create figure
+        plt.figure(figsize=(10, 6))
+        
+        # Create histogram
+        plt.hist(confidence_values, bins=20, range=(0, 1), edgecolor='black')
+        
+        plt.xlabel('Confidence')
+        plt.ylabel('Count')
+        plt.title('Cluster Confidence Distribution')
+        plt.tight_layout()
+        
+        # Save figure
+        plt.savefig(os.path.join(self.figures_dir, "confidence_histogram.png"))
+        plt.close()
+    
+    def _create_size_vs_confidence_scatter(
+        self,
+        sizes: List[int],
+        confidences: List[float]
+    ) -> None:
+        """
+        Create size vs. confidence scatter plot.
+        
+        Args:
+            sizes: Cluster sizes
+            confidences: Confidence values
+        """
+        # Create figure
+        plt.figure(figsize=(10, 6))
+        
+        # Create scatter plot
+        plt.scatter(sizes, confidences, alpha=0.5)
+        
+        plt.xlabel('Cluster Size')
+        plt.ylabel('Confidence')
+        plt.title('Cluster Size vs. Confidence')
+        plt.tight_layout()
+        
+        # Save figure
+        plt.savefig(os.path.join(self.figures_dir, "size_vs_confidence.png"))
+        plt.close()
+    
+    def _create_pipeline_timing_chart(self, stage_timings: Dict[str, float]) -> None:
+        """
+        Create pipeline timing chart.
+        
+        Args:
+            stage_timings: Stage timing information
+        """
+        # Prepare data
+        stages = list(stage_timings.keys())
+        times = list(stage_timings.values())
+        
+        # Create figure
+        plt.figure(figsize=(12, 6))
+        
+        # Create bar chart
+        plt.bar(stages, times)
+        
+        plt.xlabel('Pipeline Stage')
+        plt.ylabel('Time (seconds)')
+        plt.title('Pipeline Stage Timing')
+        plt.xticks(rotation=45, ha='right')
+        plt.tight_layout()
+        
+        # Save figure
+        plt.savefig(os.path.join(self.figures_dir, "pipeline_timing.png"))
+        plt.close()
+
+
+def analyze_pipeline_performance(
+    pipeline_instance: Any,
+    config: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Analyze pipeline performance and generate reports.
+    
+    Args:
+        pipeline_instance: Pipeline instance
+        config: Configuration dictionary
+        
+    Returns:
+        Analysis results
+    """
+    logger.info("Analyzing pipeline performance")
+    
+    # Initialize reporter
+    reporter = AnalysisReporter(config)
+    
+    # Load checkpoints
+    unique_strings = pipeline_instance.load_checkpoint("unique_strings.json")
+    string_counts = pipeline_instance.load_checkpoint("string_counts.json")
+    record_field_hashes = pipeline_instance.load_checkpoint("record_field_hashes.json")
+    field_hash_mapping = pipeline_instance.load_checkpoint("field_hash_mapping.json")
+    embeddings = pipeline_instance.load_checkpoint("embeddings.pkl")
+    classifier = pipeline_instance.load_checkpoint("classifier.pkl")
+    
+    # Load ground truth
+    ground_truth_pairs = []
+    try:
+        from preprocessing import load_ground_truth
+        ground_truth_pairs = load_ground_truth(config["ground_truth_path"])
+    except Exception as e:
+        logger.error(f"Error loading ground truth: {e}")
+    
+    # Initialize stage reports
+    reports = {}
+    
+    # Analyze preprocessing
+    if all([unique_strings, string_counts, record_field_hashes, field_hash_mapping]):
+        reports["preprocessing"] = reporter.analyze_preprocessing(
+            unique_strings, string_counts, record_field_hashes, field_hash_mapping
+        )
+    
+    # Analyze embeddings
+    if embeddings and field_hash_mapping:
+        reports["embedding"] = reporter.analyze_embeddings(
+            embeddings, field_hash_mapping
+        )
+    
+    # Connect to Weaviate for indexing analysis
+    try:
+        from indexing import connect_to_weaviate
+        weaviate_client = connect_to_weaviate(config)
+        reports["indexing"] = reporter.analyze_indexing(weaviate_client)
+    except Exception as e:
+        logger.error(f"Error connecting to Weaviate: {e}")
+    
+    # Load entity clusters
+    entity_clusters = []
+    try:
+        output_dir = config.get("output_dir", "data/output")
+        clusters_path = os.path.join(output_dir, "entity_clusters.jsonl")
+        
+        if os.path.exists(clusters_path):
+            with open(clusters_path, 'r') as f:
+                entity_clusters = [json.loads(line) for line in f]
+    except Exception as e:
+        logger.error(f"Error loading entity clusters: {e}")
+    
+    # Analyze clustering
+    if entity_clusters:
+        reports["clustering"] = reporter.analyze_clustering(
+            entity_clusters, ground_truth_pairs
+        )
+    
+    # Generate comprehensive report
+    comprehensive_report = reporter.generate_comprehensive_report()
+    
+    return comprehensive_report
+
+
+if __name__ == "__main__":
+    # Simple test to ensure the module loads correctly
+    print("Analysis module loaded successfully")
