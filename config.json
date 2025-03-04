@@ -6,9 +6,9 @@
   
   "save_checkpoints": true,
   
-  "dev_mode": false,
+  "dev_mode": true,
   "dev_max_files": 5,
-  "dev_max_rows": 1000,
+  "dev_max_rows": 10000,
   
   "generate_analysis": true,
   "analysis_sample_size": 1000,
@@ -17,7 +17,7 @@
   "enhanced_feature_interactions": true,
   "enhanced_temporal_features": true,
   "robust_date_handling": true,
-  "fuzzy_year_threshold": 5,
+  "fuzzy_year_threshold": 10,
   
   "embedding_model": "text-embedding-3-small",
   "embedding_batch_size": 100,
@@ -28,13 +28,13 @@
   "weaviate_batch_size": 100,
   "weaviate_timeout": 300,
   
-  "train_test_split": 0.8,
+  "train_test_split": 0.7,
   "random_seed": 42,
   "learning_rate": 0.01,
   "num_iterations": 1000,
   "regularization": 0.01,
   "feature_normalization": true,
-  "confidence_threshold": 0.7,
+  "confidence_threshold": 0.6,
   "candidate_limit": 100,
   "classification_batch_size": 1000,
   

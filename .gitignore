@@ -175,6 +175,8 @@ cython_debug/
 checkpoints
 data
 dev_data
+input
+logs
 output
 tmp
 venv
