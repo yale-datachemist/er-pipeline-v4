@@ -1,64 +1,6 @@
-## Enhanced Feature Engineering
+# Entity Resolution for Library Catalog Entities
 
-The system includes advanced feature engineering capabilities that significantly improve matching performance:
-
-### Enhanced Temporal Analysis
-
-The basic temporal overlap feature is extended with detailed analysis:
-
-- **Temporal Span Similarity**: Compares the publication timespan of each author
-- **Publication Era Match**: Checks if works were published in the same historical eras
-- **Year Difference Metrics**: Analyzes minimum, maximum, and median year differences
-- **Publication Density Similarity**: Compares how concentrated publications are across time
-- **Temporal Sequence Matching**: Analyzes the chronological pattern of publications
-- **Life Dates Integration**: Compares life dates (birth/death years) to publication years
-- **Biographical Plausibility**: Assesses if publication timelines make sense given life dates
-- **Posthumous Publication Detection**: Identifies and properly handles works published long after an author's death
-- **Historical Publication Patterns**: Recognizes patterns common for classical/historical authors (e.g., Shakespeare, Plato)
-- **Long-term Publishing Analysis**: Handles publication timeframes spanning centuries
-
-These features include robust handling of data quality issues:
-
-- **Fuzzy Year Matching**: Detects and accommodates off-by-a-few-years errors
-- **Transposed Digit Detection**: Identifies years with swapped digits (e.g., 1879 vs 1897)
-- **Century Error Handling**: Recognizes when years differ only by century (e.g., 1792 vs 1892)
-- **Single-Digit Errors**: Accounts for typographical errors in individual digits
-
-These features help distinguish between different authors with the same name who published in different eras or with different publication patterns.
-
-### Feature Interaction Terms
-
-The system generates interaction terms between important features to capture non-linear relationships:
-
-- **Semantic-String Interactions**: Combines semantic vector similarity with string similarity
-- **Temporal-Person Interactions**: Captures the relationship between name similarity and temporal patterns
-- **Domain-Temporal Interactions**: Links subject/genre patterns with publication timeframes
-- **Strong Signal Boosting**: Amplifies the signal when multiple strong indicators align
-- **Non-linear Transformations**: Applies mathematical transformations to emphasize high-confidence matches
-
-Feature interactions are particularly valuable for handling complex cases like posthumous publications or authors who published across different domains.
-
-### Using Enhanced Features
-
-Enhanced features are enabled by default. You can control them in the configuration:
-
-```json
-{
-  "use_enhanced_features": true,
-  "enhanced_temporal_features": true,
-  "enhanced_feature_interactions": true
-}
-```
-
-To disable them for faster processing with simpler models:
-
-```json
-{
-  "use_enhanced_features": false
-}
-```# Entity Resolution for Library Catalog Entities
-
-This project implements an entity resolution system for the Yale University Library catalog. It resolves personal name entities across catalog records using vector embeddings, machine learning classification, and graph-based clustering.
+This project implements a sophisticated entity resolution system for Yale University Library catalog data. It resolves personal name entities across catalog records using vector embeddings, ANN-based blocking, machine learning classification, and graph-based clustering.
 
 ## Overview
 
@@ -66,11 +8,20 @@ The system performs entity resolution through the following steps:
 
 1. **Preprocessing**: Parse CSV files, normalize strings, and deduplicate values
 2. **Vector Embedding**: Generate 1,536-dimensional embeddings for unique strings using OpenAI's models
-3. **Weaviate Indexing**: Index embeddings for efficient similarity search
-4. **Feature Engineering**: Create feature vectors for record pairs
-5. **Classification**: Train a logistic regression classifier to predict matches
-6. **Clustering**: Apply graph-based clustering to form entity groups
-7. **Analysis**: Generate detailed reports and visualizations for each pipeline stage
+3. **Weaviate Indexing**: Index embeddings for efficient approximate nearest neighbor search
+4. **ANN-Based Blocking**: Use vector similarity of person names as a blocking key to efficiently find candidate pairs
+5. **Feature Engineering**: Create feature vectors for record pairs with optional interaction features
+6. **Classification**: Train a logistic regression classifier to predict matches
+7. **Clustering**: Apply graph-based clustering to form entity groups
+8. **Analysis**: Generate detailed reports and visualizations for each pipeline stage
+
+## Recent Updates
+
+- **ANN-Based Blocking**: Implemented efficient blocking using person vector similarity
+- **High-Value Interaction Features**: Focused interaction feature set for better matching precision
+- **Configurable Feature Enhancement**: Added granular control for feature types
+- **Performance Improvements**: Optimized candidate pair generation with hash-based lookups
+- **Enhanced Documentation**: Improved docstrings and code comments for better maintainability
 
 ## Project Structure
 
@@ -85,6 +36,8 @@ entity-resolution/
 ├── embedding.py             # Vector embedding module
 ├── indexing.py              # Weaviate integration module
 ├── classification.py        # Feature engineering and classification module
+├── enhanced_features.py     # Enhanced feature engineering module
+├── integration.py           # Integration utilities
 ├── analysis.py              # Analysis and reporting module
 ├── utils.py                 # Utility functions
 ├── data/                    # Data directory
@@ -97,60 +50,74 @@ entity-resolution/
 ## Installation
 
 1. Clone the repository:
-   ```
+   ```bash
    git clone https://github.com/yourusername/entity-resolution.git
    cd entity-resolution
    ```
 
 2. Install Python dependencies:
-   ```
+   ```bash
    pip install -r requirements.txt
    ```
 
 3. Set up Weaviate using Docker:
-   ```
+   ```bash
    docker-compose up -d
    ```
 
 4. Set the OpenAI API key as an environment variable:
-   ```
+   ```bash
    export OPENAI_API_KEY=your_api_key_here
    ```
 
-## Usage
-
-### Configuration
+## Configuration
 
 Edit `config.json` to customize the pipeline settings. Key configuration options include:
 
-- `input_dir`: Directory containing input CSV files
-- `dev_mode`: Run with a subset of data for development
-- `embedding_model`: OpenAI embedding model to use
-- `confidence_threshold`: Threshold for entity matching
-- `use_llm_fallback`: Whether to use LLM for ambiguous cases
-- `use_enhanced_features`: Enable advanced feature engineering
-- `enhanced_temporal_features`: Enable detailed temporal analysis
-- `enhanced_feature_interactions`: Enable feature interaction terms
-- `robust_date_handling`: Enable robust handling of date errors and inconsistencies
-- `fuzzy_year_threshold`: Configure tolerance level for year matching (default: 5)
+| Option | Description | Default |
+|--------|-------------|---------|
+| `input_dir` | Directory containing input CSV files | `"data/input"` |
+| `dev_mode` | Run with a subset of data for development | `false` |
+| `embedding_model` | OpenAI embedding model to use | `"text-embedding-3-small"` |
+| `confidence_threshold` | Threshold for entity matching | `0.7` |
+| `use_enhanced_features` | Enable enhanced feature engineering | `false` |
+| `interaction_features_only` | Use only interaction features | `false` |
+| `use_llm_fallback` | Whether to use LLM for ambiguous cases | `false` |
+| `candidate_limit` | Maximum number of candidates per record | `100` |
+| `classification_batch_size` | Number of records to process in one batch | `1000` |
+
+### Feature Engineering Configuration
+
+To control the feature engineering process, you can use these configuration options:
+
+```json
+{
+  "use_enhanced_features": false,         // Master switch for all enhanced features
+  "enhanced_temporal_features": false,    // Enable enhanced temporal features
+  "interaction_features_only": true,      // Use only interaction features
+  "feature_normalization": true          // Normalize feature vectors
+}
+```
+
+## Usage
 
 ### Running the Full Pipeline
 
 To run the complete pipeline:
 
-```
+```bash
 python pipeline.py
 ```
 
 For development mode with a subset of data:
 
-```
+```bash
 python pipeline.py --dev
 ```
 
 To run the pipeline without generating analysis reports:
 
-```
+```bash
 python pipeline.py --no-analysis
 ```
 
@@ -158,7 +125,7 @@ python pipeline.py --no-analysis
 
 You can run specific modules independently:
 
-```
+```bash
 python pipeline.py --module preprocessing
 python pipeline.py --module embedding
 python pipeline.py --module indexing
@@ -168,6 +135,35 @@ python pipeline.py --module classification
 python pipeline.py --module evaluation
 python pipeline.py --module analysis
 ```
+
+## Key Features
+
+### ANN-Based Blocking
+
+The system uses Approximate Nearest Neighbor (ANN) search to efficiently find candidate pairs for comparison:
+
+1. Each record's `person` field is embedded as a vector
+2. Weaviate's HNSW algorithm finds similar vectors
+3. This acts as a blocking key, drastically reducing the number of pairwise comparisons
+4. A hash-based lookup map efficiently connects person vectors to record IDs
+
+This approach is both scalable and accurate, allowing the system to handle hundreds of thousands of records efficiently.
+
+### High-Value Interaction Features
+
+The system includes carefully selected interaction features that capture non-linear relationships between base features:
+
+1. **Name-Temporal Interaction**: Combines person name similarity with publication timeline compatibility
+2. **String Reinforcement**: Strengthens signals when multiple string similarity measures agree
+3. **Exact Match Detection**: Binary indicators for high-confidence exact matches
+4. **Life Dates Integration**: Special handling for records with birth/death dates
+5. **Role-Temporal Interactions**: Captures relationships between author roles and publishing patterns
+
+These interaction features improve matching precision for bibliographic data, particularly for:
+- Historical authors with publications spanning centuries
+- Name variations across different records
+- Posthumous publications
+- Records with asymmetric information (e.g., one has life dates, one doesn't)
 
 ## Pipeline Steps
 
@@ -182,7 +178,7 @@ The preprocessing module parses CSV files and extracts field values. It deduplic
 
 ### 2. Vector Embedding
 
-The embedding module generates 1,536-dimensional vector embeddings for each unique string using OpenAI's `text-embedding-3-small` model. It handles:
+The embedding module generates 1,536-dimensional vector embeddings for each unique string using OpenAI's model. It handles:
 
 - Batch processing with configurable batch size
 - Rate limiting to respect API quotas
@@ -200,11 +196,12 @@ The indexing module stores embeddings in Weaviate for efficient similarity searc
 
 The classification module:
 
+- Uses ANN-based blocking to efficiently identify candidate pairs
 - Generates feature vectors for record pairs
 - Imputes missing values using vector-based hot deck approach
+- Adds high-value interaction features
 - Trains a logistic regression classifier with gradient descent
 - Implements optional LLM fallback for ambiguous cases
-- Provides enhanced feature engineering with temporal analysis and feature interactions
 
 ### 5. Clustering
 
@@ -223,51 +220,29 @@ The system evaluates entity resolution performance using:
 - Recall: Percentage of actual matches that are predicted
 - F1 Score: Harmonic mean of precision and recall
 
-## Analysis and Reporting
+## Troubleshooting
 
-The system generates comprehensive analysis reports and visualizations for each pipeline stage:
+### Vector Embedding Issues
 
-### Preprocessing Analysis
-- Field statistics and distributions
-- String frequency analysis
-- Person name length distribution
+If you encounter errors during the embedding process:
+- Check your OpenAI API key is correctly set
+- Verify API rate limits haven't been exceeded
+- Ensure the embedding model specified in config exists
 
-### Embedding Analysis
-- Embeddings distribution via PCA and t-SNE
-- Vector statistics by field type
+### Weaviate Connection Issues
 
-### Indexing Analysis
-- Indexed object counts by field type
-- Weaviate performance metrics
+If Weaviate fails to connect:
+- Verify Docker is running and the container is active
+- Check the Weaviate URL in the configuration
+- Ensure the port is not being used by another service
 
-### Feature Engineering Analysis
-- Feature importance scores
-- Feature correlation heatmaps
-- Feature distributions by class
+### Memory Issues
 
-### Classification Analysis
-- Confusion matrix visualization
-- ROC and precision-recall curves
-- Decision boundary analysis
-
-### Clustering Analysis
-- Cluster size distribution
-- Confidence value distribution
-- Size vs. confidence correlations
-
-### Pipeline Analysis
-- Stage timing breakdown
-- Resource usage statistics
-- Overall performance metrics
-
-Reports and visualizations are saved to the `data/output/reports` directory.
-
-## Resources
-
-- Vector Embedding: Uses OpenAI's `text-embedding-3-small` model
-- Vector Search: Uses Weaviate (minimum version 1.24.x)
-- Classification: Custom logistic regression with gradient descent
-- Clustering: Graph-based community detection with NetworkX
+For large datasets:
+- Reduce batch sizes in the configuration
+- Enable development mode for testing
+- Increase Docker memory allocation for Weaviate
+- Consider using a machine with more RAM
 
 ## License
 
