@@ -65,7 +65,7 @@ def get_descriptive_feature_names(enhanced_features: List[float], base_names: Li
         "provision_sim": "Provision Vector Similarity",
         "subjects_sim": "Subjects Vector Similarity",
         "genres_sim": "Genres Vector Similarity",
-        "relatedWork_sim": "Related Work Vector Similarity",
+        #"relatedWork_sim": "Related Work Vector Similarity",
         
         # Name features
         "person_lev_sim": "Person Name Levenshtein Similarity",

@@ -168,11 +168,11 @@ def preprocess_catalog_data(
     # Fields to process
     fields_to_process = [
         'record', 'person', 'roles', 'title', 'attribution', 
-        'provision', 'subjects', 'genres', 'relatedWork'
+        'provision', 'subjects', 'genres'
     ]
     
     # Fields that can be null
-    nullable_fields = ['attribution', 'provision', 'subjects', 'genres', 'relatedWork']
+    nullable_fields = ['attribution', 'provision', 'subjects', 'genres']
     
     # Filter out ground truth file explicitly
     filtered_input_files = []

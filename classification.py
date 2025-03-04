@@ -188,7 +188,7 @@ def bulk_impute_fields(
     for fields in record_field_hashes.values():
         record_hash = fields.get('record', "NULL")
         if record_hash != "NULL":
-            for field in ['attribution', 'provision', 'subjects', 'genres', 'relatedWork']:
+            for field in ['attribution', 'provision', 'subjects', 'genres']:
                 if fields.get(field) == "NULL":
                     field_hash_counts[(record_hash, field)] += 1
     
@@ -445,11 +445,11 @@ def engineer_features(
     
     # Fields to process
     fields = ['person', 'record', 'title', 'roles', 'attribution', 
-              'provision', 'subjects', 'genres', 'relatedWork']
+              'provision', 'subjects', 'genres']
     
     # Nullable fields
     nullable_fields = config.get("nullable_fields_to_use", 
-                                ['attribution', 'provision', 'subjects', 'genres', 'relatedWork'])
+                                ['attribution', 'provision', 'subjects', 'genres'])
     
     # Check for interaction features only mode
     interaction_features_only = config.get("interaction_features_only", False)
@@ -611,7 +611,7 @@ def train_classifier(
     if not feature_names:
         # Use default feature names if not provided
         fields = ['person', 'record', 'title', 'roles', 'attribution', 
-                  'provision', 'subjects', 'genres', 'relatedWork']
+                  'provision', 'subjects', 'genres']
         feature_names = [f"{field}_sim" for field in fields]
         feature_names.extend(['person_lev_sim', 'has_life_dates', 'temporal_overlap'])
         

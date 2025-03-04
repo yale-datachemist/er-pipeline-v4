@@ -86,8 +86,7 @@ class AnalysisReporter:
             "attribution": {"count": 0, "null_count": 0, "unique_count": 0},
             "provision": {"count": 0, "null_count": 0, "unique_count": 0},
             "subjects": {"count": 0, "null_count": 0, "unique_count": 0},
-            "genres": {"count": 0, "null_count": 0, "unique_count": 0},
-            "relatedWork": {"count": 0, "null_count": 0, "unique_count": 0}
+            "genres": {"count": 0, "null_count": 0, "unique_count": 0}
         }
         
         # Calculate field statistics
@@ -273,7 +272,7 @@ class AnalysisReporter:
         if field_types is None:
             field_types = [
                 "record", "person", "roles", "title", "attribution",
-                "provision", "subjects", "genres", "relatedWork"
+                "provision", "subjects", "genres"
             ]
         
         # Check if client is connected
@@ -459,7 +458,7 @@ class AnalysisReporter:
         if feature_names is None:
             feature_names = [
                 'record_sim', 'person_sim', 'roles_sim', 'title_sim', 'attribution_sim',
-                'provision_sim', 'subjects_sim', 'genres_sim', 'relatedWork_sim',
+                'provision_sim', 'subjects_sim', 'genres_sim', 
                 'person_lev_sim', 'has_life_dates', 'temporal_overlap'
             ]
             
@@ -1472,7 +1471,7 @@ def analyze_test_results(
             # Try to extend with base names we know
             base_names = [
                 'person_sim', 'record_sim', 'title_sim', 'roles_sim', 'attribution_sim', 
-                'provision_sim', 'subjects_sim', 'genres_sim', 'relatedWork_sim',
+                'provision_sim', 'subjects_sim', 'genres_sim',
                 'person_lev_sim', 'has_life_dates', 'temporal_overlap'
             ]
             

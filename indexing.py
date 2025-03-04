@@ -61,7 +61,7 @@ def create_schema(client: weaviate.Client, config: Dict[str, Any]) -> None:
     # Define named vectors for each field
     field_types = [
         "record", "person", "roles", "title", "attribution",
-        "provision", "subjects", "genres", "relatedWork"
+        "provision", "subjects", "genres"
     ]
     
     
