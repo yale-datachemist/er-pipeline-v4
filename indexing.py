@@ -64,15 +64,16 @@ def create_schema(client: weaviate.Client, config: Dict[str, Any]) -> None:
         "provision", "subjects", "genres", "relatedWork"
     ]
     
+    
     vector_configs = []
     for field in field_types:
         vector_configs.append(
             Configure.NamedVectors.none(
-                name=field,
+                name=field,                
                 vector_index_config=Configure.VectorIndex.hnsw(
                     ef=config.get("weaviate_ef", 128),
-                    maxConnections=config.get("weaviate_max_connections", 64),
-                    efConstruction=config.get("weaviate_ef_construction", 128),
+                    max_connections=config.get("weaviate_max_connections", 64),
+                    ef_construction=config.get("weaviate_ef_construction", 128),
                     distance=config.get("weaviate_distance", "cosine")
                 )
             )
@@ -116,73 +117,76 @@ def index_embeddings(
     # Connect to Weaviate
     client = connect_to_weaviate(config)
     
-    # Create schema if needed
-    create_schema(client, config)
-    
-    # Get collection
-    collection = client.collections.get("UniqueStringsByField")
-    
-    # Check if data is already indexed
-    if config.get("skip_if_indexed", False):
-        try:
-            # Check count of objects in collection
-            count = collection.query.fetch_objects(limit=1).total_count
-            if count > 0:
-                logger.info(f"Found {count} objects already indexed, skipping indexing")
-                return client
-        except Exception as e:
-            logger.warning(f"Error checking existing objects: {e}")
-    
-    # Count items to be indexed
-    total_items = sum(
-        len(fields) for h, fields in field_hash_mapping.items() 
-        if h in embeddings
-    )
-    logger.info(f"Indexing {total_items} items in Weaviate")
-    
-    # Get batch size
-    batch_size = config.get("weaviate_batch_size", 100)
-    
-    # Use batch processing for efficiency
-    with collection.batch.dynamic() as batch:
-        counter = 0
-        for hash_value in tqdm(field_hash_mapping.keys(), desc="Indexing embeddings"):
-            # Skip if this hash doesn't have an embedding
-            if hash_value not in embeddings:
-                continue
-            
-            # Get the string value and embedding
-            string_value = unique_strings.get(hash_value, "")
-            embedding_vector = embeddings.get(hash_value, [])
-            
-            # For each field type this string appears in
-            for field_type, count in field_hash_mapping.get(hash_value, {}).items():
-                # Create vector dictionary for named vectors
-                vectors = {field_type: embedding_vector}
+    try:
+        # Create schema if needed
+        create_schema(client, config)
+        
+        # Get collection
+        collection = client.collections.get("UniqueStringsByField")
+        
+        # Check if data is already indexed
+        if config.get("skip_if_indexed", False):
+            try:
+                # Check count of objects in collection
+                count = collection.query.fetch_objects(limit=1).total_count
+                if count > 0:
+                    logger.info(f"Found {count} objects already indexed, skipping indexing")
+                    return client
+            except Exception as e:
+                logger.warning(f"Error checking existing objects: {e}")
+        
+        # Count items to be indexed
+        total_items = sum(
+            len(fields) for h, fields in field_hash_mapping.items() 
+            if h in embeddings
+        )
+        logger.info(f"Indexing {total_items} items in Weaviate")
+        
+        # Get batch size
+        batch_size = config.get("weaviate_batch_size", 100)
+        
+        # Use batch processing for efficiency
+        with collection.batch.dynamic() as batch:
+            counter = 0
+            for hash_value in tqdm(field_hash_mapping.keys(), desc="Indexing embeddings"):
+                # Skip if this hash doesn't have an embedding
+                if hash_value not in embeddings:
+                    continue
                 
-                # Insert object
-                batch.add_object(
-                    properties={
-                        "string_value": string_value,
-                        "hash": hash_value,
-                        "frequency": string_counts.get(hash_value, 0),
-                        "field_type": field_type,
-                    },
-                    vector=vectors
-                )
+                # Get the string value and embedding
+                string_value = unique_strings.get(hash_value, "")
+                embedding_vector = embeddings.get(hash_value, [])
                 
-                counter += 1
-                
-                # Log progress periodically
-                if counter % (batch_size * 10) == 0:
-                    logger.info(f"Indexed {counter} items")
-    
-    # Ensure indexing is complete
-    logger.info("Waiting for indexing to complete...")
-    collection.wait_for_indexing()
-    
-    logger.info(f"Successfully indexed {counter} items")
-    return client
+                # For each field type this string appears in
+                for field_type, count in field_hash_mapping.get(hash_value, {}).items():
+                    # Create vector dictionary for named vectors
+                    vectors = {field_type: embedding_vector}
+                    
+                    # Insert object
+                    batch.add_object(
+                        properties={
+                            "string_value": string_value,
+                            "hash": hash_value,
+                            "frequency": string_counts.get(hash_value, 0),
+                            "field_type": field_type,
+                        },
+                        vector=vectors
+                    )
+                    
+                    counter += 1
+                    
+                    # Log progress periodically
+                    if counter % (batch_size * 10) == 0:
+                        logger.info(f"Indexed {counter} items")
+        
+        # Ensure indexing is complete
+        logger.info("Waiting for indexing to complete...")
+        collection.wait_for_indexing()
+        
+        logger.info(f"Successfully indexed {counter} items")
+        return client
+    finally:
+        client.close()
 
 
 def vector_search(
