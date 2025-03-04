@@ -127,7 +127,7 @@ def index_embeddings(
     if config.get("skip_if_indexed", False):
         try:
             # Check count of objects in collection
-            count = collection.query.fetch_objects(limit=1).total_count
+            count = collection.aggregate.over_all(total_count=True).total_count
             if count > 0:
                 logger.info(f"Found {count} objects already indexed, skipping indexing")
                 return client

@@ -285,22 +285,48 @@ class AnalysisReporter:
             collection = weaviate_client.collections.get("UniqueStringsByField")
             
             # Get total count
-            total_objects = collection.query.fetch_objects(limit=1).total_count
-            
+            count_result = collection.aggregate.over_all().count()
+            total_objects = count_result.total_count if hasattr(count_result, 'total_count') else 0
+            logger.info(f"UniqueStrings collection has {total_objects} objects")
+
             # Get counts by field type
             field_counts = {}
-            for field in field_types:
-                try:
-                    from weaviate.classes.query import Filter
-                    field_filter = Filter.by_property("field_type").equal(field)
-                    count = collection.query.fetch_objects(
-                        filters=field_filter,
-                        limit=1
-                    ).total_count
-                    field_counts[field] = count
-                except Exception as e:
-                    logger.error(f"Error getting count for field {field}: {e}")
-                    field_counts[field] = 0
+            try:
+                # Use group_by to count by field_type
+                result = collection.aggregate.over_all(
+                    group_by=GroupByAggregate(prop="field_type"),
+                    total_count=True
+                )
+                
+                # Process group results
+                for group in result.groups:
+                    field_type = group.grouped_by["field_type"]
+                    count = group.total_count
+                    field_counts[field_type] = count
+                    
+                # Fill in zeros for any missing field types
+                for field in field_types:
+                    if field not in field_counts:
+                        field_counts[field] = 0
+                        
+            except Exception as e:
+                logger.error(f"Error getting field counts: {e}")
+            
+            # # Fall back to individual queries if grouping fails
+            # for field in field_types:
+            #     try:
+            #         from weaviate.classes.query import Filter
+            #         from weaviate.classes.aggregate import GroupByAggregate
+            #         field_filter = Filter.by_property("field_type").equal(field)
+            #         count = collection.query.fetch_objects(
+            #             filters=field_filter,
+            #             limit=1
+            #         ).total_count                    
+
+            #         field_counts[field] = count
+            #     except Exception as e:
+            #         logger.error(f"Error getting count for field {field}: {e}")
+            #         field_counts[field] = 0
             
             # Create field count visualization
             self._create_field_count_chart(field_counts)
