@@ -362,9 +362,27 @@ def process_record_pair(
         
     # Current feature names (without enhancement)
     current_feature_names = feature_names.copy()
-        
-    # Enhance features if enabled
-    if use_enhanced_features:
+    
+    # Determine which type of feature enhancement to use
+    use_enhanced_features = config.get("use_enhanced_features", False)
+    interaction_features_only = config.get("interaction_features_only", False)
+    
+    if interaction_features_only:
+        # Add only interaction features
+        try:
+            features, current_feature_names = add_interaction_features_only(
+                features, 
+                current_feature_names,
+                unique_strings, 
+                record_field_hashes, 
+                id1, 
+                id2,
+                config
+            )
+        except Exception as e:
+            logger.warning(f"Error adding interaction features: {e}")
+    elif use_enhanced_features:
+        # Use the full feature enhancement
         try:
             result = enhance_feature_vector(
                 features, 
@@ -385,7 +403,6 @@ def process_record_pair(
         except Exception as e:
             # Log error but continue with basic features
             logger.warning(f"Error enhancing features: {e}")
-
     
     # Normalize feature vector if required
     if config.get("feature_normalization", True):
@@ -1258,6 +1275,46 @@ def generate_test_dataset_report(
                 writer.writerow(row)
     
     logger.info(f"Saved complete test dataset report with {len(test_pairs)} pairs to {csv_path}")
+
+def add_interaction_features_only(
+    base_features: List[float],
+    feature_names: List[str],
+    unique_strings: Dict[str, str],
+    record_field_hashes: Dict[str, Dict[str, str]],
+    record_id1: str,
+    record_id2: str,
+    config: Dict[str, Any]
+) -> Tuple[List[float], List[str]]:
+    """
+    Add only interaction features to the base feature vector without other enhancements.
+    This function is used when you want interaction features but not other enhanced features.
+    
+    Args:
+        base_features: Base feature vector
+        feature_names: Names of base features
+        unique_strings: Dictionary of hash → string value
+        record_field_hashes: Dictionary of record ID → field → hash
+        record_id1: First record ID
+        record_id2: Second record ID
+        config: Configuration dictionary
+        
+    Returns:
+        Tuple of (enhanced_features, enhanced_feature_names)
+    """
+    # Convert base features to dictionary
+    base_features_dict = {name: value for name, value in zip(feature_names, base_features)}
+    
+    # Generate only the interaction features
+    interaction_features = generate_high_value_interaction_features(base_features_dict)
+    
+    # Combine with base features
+    enhanced_features_dict = {**base_features_dict, **interaction_features}
+    
+    # Convert back to list format
+    enhanced_feature_names = list(enhanced_features_dict.keys())
+    enhanced_feature_values = [enhanced_features_dict[name] for name in enhanced_feature_names]
+    
+    return enhanced_feature_values, enhanced_feature_names
 
 if __name__ == "__main__":
     # Simple test to ensure the module loads correctly

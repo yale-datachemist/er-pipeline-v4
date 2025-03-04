@@ -13,9 +13,10 @@
   "generate_analysis": true,
   "analysis_sample_size": 1000,
   
-  "use_enhanced_features": false,
-  "enhanced_feature_interactions": false,
+  "use_enhanced_features": false,  
   "enhanced_temporal_features": false,
+  "enhanced_feature_interactions": false,
+  "interaction_features_only": true,  
   "robust_date_handling": false,
   "fuzzy_year_threshold": 10,
   
