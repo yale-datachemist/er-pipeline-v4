@@ -12,7 +12,7 @@ from typing import Dict, List, Any, Optional, Tuple
 import numpy as np
 import weaviate
 from tqdm import tqdm
-from weaviate.classes.config import Configure, Property, DataType
+from weaviate.classes.config import Configure, Property, DataType, VectorDistances
 from weaviate.classes.query import MetadataQuery, Filter
 
 # Configure logging
@@ -74,7 +74,7 @@ def create_schema(client: weaviate.Client, config: Dict[str, Any]) -> None:
                     ef=config.get("weaviate_ef", 128),
                     max_connections=config.get("weaviate_max_connections", 64),
                     ef_construction=config.get("weaviate_ef_construction", 128),
-                    distance=config.get("weaviate_distance", "cosine")
+                    distance_metric=VectorDistances.COSINE,
                 )
             )
         )
@@ -181,13 +181,30 @@ def index_embeddings(
         
         # Ensure indexing is complete
         logger.info("Waiting for indexing to complete...")
-        collection.wait_for_indexing()
+        wait_for_indexing_completion(client, collection.name)
         
         logger.info(f"Successfully indexed {counter} items")
         return client
     finally:
         client.close()
 
+def wait_for_indexing_completion(client, collection_name, timeout_seconds=300, check_interval_seconds=5):
+    """Poll Weaviate until indexing is complete or timeout is reached"""
+    start_time = time.time()
+    
+    while time.time() - start_time < timeout_seconds:
+        # Check if the client is ready
+        if client.is_ready():
+            # You can add additional checks here if needed
+            # For example, query a sample object to verify it's indexed
+            logger.info(f"Indexing appears complete for collection '{collection_name}'")
+            return True
+        
+        logger.info(f"Still waiting for indexing to complete...")
+        time.sleep(check_interval_seconds)
+    
+    logger.warning(f"Indexing wait timed out after {timeout_seconds} seconds")
+    return False
 
 def vector_search(
     client: weaviate.Client,

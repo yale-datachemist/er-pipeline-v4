@@ -10,6 +10,9 @@ import importlib.util
 import sys
 from typing import Dict, List, Any, Tuple, Optional, Set
 
+# Configure logging
+logger = logging.getLogger(__name__)
+
 def compare_year_compatibility(
     years: List[int],
     birth_year: Optional[int] = None,

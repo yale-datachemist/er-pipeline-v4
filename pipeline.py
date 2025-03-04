@@ -75,136 +75,149 @@ class EntityResolutionPipeline:
         # Initialize analysis reporter
         reporter = AnalysisReporter(self.config)
         
-        # Step 1: Preprocessing
-        self.logger.info("Step 1: Preprocessing data")
-        preprocessing_start = time.time()
-        
-        input_files = get_input_files(self.config["input_dir"])
-        
-        unique_strings, string_counts, record_field_hashes, field_hash_mapping = preprocess_catalog_data(
-            input_files, 
-            self.config,
-            dev_mode=self.config.get("dev_mode", False)
-        )
-        
-        stage_timings["preprocessing"] = time.time() - preprocessing_start
-        
-        # Analyze preprocessing results
-        if self.config.get("generate_analysis", True):
-            reporter.analyze_preprocessing(
-                unique_strings, string_counts, record_field_hashes, field_hash_mapping
-            )
-        
-        # Step 2: Vector Embedding
-        self.logger.info("Step 2: Generating embeddings")
-        embedding_start = time.time()
-        
-        embeddings = generate_embeddings(unique_strings, self.config)
-        
-        stage_timings["embedding"] = time.time() - embedding_start
-        
-        # Analyze embedding results
-        if self.config.get("generate_analysis", True):
-            reporter.analyze_embeddings(embeddings, field_hash_mapping)
-        
-        # Step 3: Weaviate Indexing
-        self.logger.info("Step 3: Indexing embeddings in Weaviate")
-        indexing_start = time.time()
-        
-        weaviate_client = index_embeddings(
-            unique_strings, 
-            embeddings, 
-            field_hash_mapping,
-            string_counts,
-            self.config
-        )
-        
-        stage_timings["indexing"] = time.time() - indexing_start
-        
-        # Analyze indexing results
-        if self.config.get("generate_analysis", True):
-            reporter.analyze_indexing(weaviate_client)
-        
-        # Step 4: Feature Engineering & Training
-        self.logger.info("Step 4: Engineering features and training classifier")
-        feature_start = time.time()
-        
-        ground_truth_pairs = load_ground_truth(self.config["ground_truth_path"])
-        
-        X, y = engineer_features(
-            ground_truth_pairs, 
-            record_field_hashes, 
-            unique_strings, 
-            embeddings, 
-            weaviate_client, 
-            self.config
-        )
-        
-        # Analyze feature engineering results
-        if self.config.get("generate_analysis", True):
-            reporter.analyze_features(X, y)
-        
-        # Train classifier
-        classifier = train_classifier(X, y, self.config)
-        
-        stage_timings["feature_engineering_training"] = time.time() - feature_start
-        
-        # Analyze classification results
-        if self.config.get("generate_analysis", True):
-            # Split data for evaluation
-            from sklearn.model_selection import train_test_split
+        # Initialize the Weaviate client as None
+        weaviate_client = None
+
+        try:
+            # Step 1: Preprocessing
+            self.logger.info("Step 1: Preprocessing data")
+            preprocessing_start = time.time()
             
-            X_train, X_test, y_train, y_test = train_test_split(
-                X, y, 
-                test_size=1-self.config.get("train_test_split", 0.8),
-                random_state=self.config.get("random_seed", 42)
+            input_files = get_input_files(self.config["input_dir"])
+            
+            unique_strings, string_counts, record_field_hashes, field_hash_mapping = preprocess_catalog_data(
+                input_files, 
+                self.config,
+                dev_mode=self.config.get("dev_mode", False)
             )
             
-            reporter.analyze_classification(classifier, X_test, y_test)
+            stage_timings["preprocessing"] = time.time() - preprocessing_start
+            
+            # Analyze preprocessing results
+            if self.config.get("generate_analysis", True):
+                reporter.analyze_preprocessing(
+                    unique_strings, string_counts, record_field_hashes, field_hash_mapping
+                )
+            
+            # Step 2: Vector Embedding
+            self.logger.info("Step 2: Generating embeddings")
+            embedding_start = time.time()
+            
+            embeddings = generate_embeddings(unique_strings, self.config)
+            
+            stage_timings["embedding"] = time.time() - embedding_start
+            
+            # Analyze embedding results
+            if self.config.get("generate_analysis", True):
+                reporter.analyze_embeddings(embeddings, field_hash_mapping)
+            
+            # Step 3: Weaviate Indexing
+            self.logger.info("Step 3: Indexing embeddings in Weaviate")
+            indexing_start = time.time()
+            
+            weaviate_client = index_embeddings(
+                unique_strings, 
+                embeddings, 
+                field_hash_mapping,
+                string_counts,
+                self.config
+            )
+            
+            stage_timings["indexing"] = time.time() - indexing_start
+            
+            # Analyze indexing results
+            if self.config.get("generate_analysis", True):
+                reporter.analyze_indexing(weaviate_client)
+            
+            # Step 4: Feature Engineering & Training
+            self.logger.info("Step 4: Engineering features and training classifier")
+            feature_start = time.time()
+            
+            ground_truth_pairs = load_ground_truth(self.config["ground_truth_path"])
+            
+            X, y = engineer_features(
+                ground_truth_pairs, 
+                record_field_hashes, 
+                unique_strings, 
+                embeddings, 
+                weaviate_client, 
+                self.config
+            )
+            
+            # Analyze feature engineering results
+            if self.config.get("generate_analysis", True):
+                reporter.analyze_features(X, y)
+            
+            # Train classifier
+            classifier = train_classifier(X, y, self.config)
+            
+            stage_timings["feature_engineering_training"] = time.time() - feature_start
+            
+            # Analyze classification results
+            if self.config.get("generate_analysis", True):
+                # Split data for evaluation
+                from sklearn.model_selection import train_test_split
+                
+                X_train, X_test, y_train, y_test = train_test_split(
+                    X, y, 
+                    test_size=1-self.config.get("train_test_split", 0.8),
+                    random_state=self.config.get("random_seed", 42)
+                )
+                
+                reporter.analyze_classification(classifier, X_test, y_test)
+            
+            # Step 5: Classification & Clustering
+            self.logger.info("Step 5: Classifying and clustering entities")
+            clustering_start = time.time()
+            
+            entity_clusters = classify_and_cluster(
+                record_field_hashes, 
+                unique_strings, 
+                embeddings,
+                classifier, 
+                weaviate_client, 
+                self.config
+            )
+            
+            stage_timings["classification_clustering"] = time.time() - clustering_start
+            
+            # Analyze clustering results
+            if self.config.get("generate_analysis", True):
+                reporter.analyze_clustering(entity_clusters, ground_truth_pairs)
+            
+            # Step 6: Evaluation
+            self.logger.info("Step 6: Evaluating results")
+            evaluation_start = time.time()
+            
+            evaluation_results = evaluate_clusters(
+                entity_clusters, 
+                ground_truth_pairs, 
+                self.config
+            )
+            
+            stage_timings["evaluation"] = time.time() - evaluation_start
+            
+            # Log timing
+            end_time = time.time()
+            elapsed = end_time - start_time
+            self.logger.info(f"Pipeline completed in {elapsed:.2f} seconds ({elapsed/60:.2f} minutes)")
+            
+            # Generate pipeline analysis
+            if self.config.get("generate_analysis", True):
+                reporter.analyze_pipeline(evaluation_results, stage_timings)
+                comprehensive_report = reporter.generate_comprehensive_report()
+                self.logger.info(f"Generated comprehensive analysis report")
+            
+            return evaluation_results
         
-        # Step 5: Classification & Clustering
-        self.logger.info("Step 5: Classifying and clustering entities")
-        clustering_start = time.time()
-        
-        entity_clusters = classify_and_cluster(
-            record_field_hashes, 
-            unique_strings, 
-            embeddings,
-            classifier, 
-            weaviate_client, 
-            self.config
-        )
-        
-        stage_timings["classification_clustering"] = time.time() - clustering_start
-        
-        # Analyze clustering results
-        if self.config.get("generate_analysis", True):
-            reporter.analyze_clustering(entity_clusters, ground_truth_pairs)
-        
-        # Step 6: Evaluation
-        self.logger.info("Step 6: Evaluating results")
-        evaluation_start = time.time()
-        
-        evaluation_results = evaluate_clusters(
-            entity_clusters, 
-            ground_truth_pairs, 
-            self.config
-        )
-        
-        stage_timings["evaluation"] = time.time() - evaluation_start
-        
-        # Log timing
-        end_time = time.time()
-        elapsed = end_time - start_time
-        self.logger.info(f"Pipeline completed in {elapsed:.2f} seconds ({elapsed/60:.2f} minutes)")
-        
-        # Generate pipeline analysis
-        if self.config.get("generate_analysis", True):
-            reporter.analyze_pipeline(evaluation_results, stage_timings)
-            comprehensive_report = reporter.generate_comprehensive_report()
-            self.logger.info(f"Generated comprehensive analysis report")
-        
-        return evaluation_results
+        finally:
+            # Clean up and close Weaviate client connection
+            if weaviate_client is not None:
+                try:
+                    weaviate_client.close()
+                    self.logger.info("Weaviate client connection closed")
+                except Exception as e:
+                    self.logger.warning(f"Error closing Weaviate client: {e}")
     
     def run_module(self, module_name: str, **kwargs) -> Any:
         """
