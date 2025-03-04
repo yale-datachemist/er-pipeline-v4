@@ -174,6 +174,16 @@ def preprocess_catalog_data(
     # Fields that can be null
     nullable_fields = ['attribution', 'provision', 'subjects', 'genres', 'relatedWork']
     
+    # Filter out ground truth file explicitly
+    filtered_input_files = []
+    for f in input_files:
+        if 'ground_truth.csv' in f:
+            logger.info(f"Excluding ground truth file from preprocessing: {f}")
+        else:
+            filtered_input_files.append(f)
+    
+    input_files = filtered_input_files
+    
     # Limit files in dev mode
     if dev_mode:
         max_files = config.get("dev_max_files", 5)
@@ -183,6 +193,8 @@ def preprocess_catalog_data(
     # Process each file
     for file_path in tqdm(input_files, desc="Processing files"):
         try:
+            logger.info(f"Processing file: {file_path}")
+            
             with open(file_path, 'r', encoding='utf-8') as f:
                 reader = csv.DictReader(f)
                 
@@ -282,19 +294,36 @@ def load_ground_truth(file_path: str) -> List[Tuple[str, str, bool]]:
     """
     ground_truth = []
     
+    if not os.path.exists(file_path):
+        logger.error(f"Ground truth file not found: {file_path}")
+        return ground_truth
+    
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
-            reader = csv.reader(f)
-            for row in reader:
-                if len(row) != 3:
-                    logger.warning(f"Skipping invalid ground truth row: {row}")
+            lines = f.readlines()
+            
+        # Clean up lines and strip whitespace
+        lines = [line.strip() for line in lines if line.strip()]
+        
+        # Skip the header
+        if lines and len(lines) > 0:
+            header = lines[0]
+            logger.info(f"Ground truth header: {header}")
+            
+            # Process data rows
+            for line in lines[1:]:
+                parts = [part.strip() for part in line.split(',')]
+                if len(parts) != 3:
+                    logger.warning(f"Skipping invalid ground truth row: {line}")
                     continue
                     
-                left_id, right_id, match_str = row
+                left_id, right_id, match_str = parts
                 is_match = match_str.lower() == 'true'
                 ground_truth.append((left_id, right_id, is_match))
     except Exception as e:
         logger.error(f"Error loading ground truth from {file_path}: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
     
     logger.info(f"Loaded {len(ground_truth)} ground truth pairs")
     return ground_truth

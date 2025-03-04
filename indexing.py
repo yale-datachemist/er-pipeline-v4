@@ -33,10 +33,11 @@ def connect_to_weaviate(config: Dict[str, Any]) -> weaviate.Client:
     timeout = config.get("weaviate_timeout", 300)
     
     try:
-        client = weaviate.connect_to_custom(
-            url=url,
-            timeout_config=(timeout, timeout)  # (connect_timeout, read_timeout)
-        )
+        # client = weaviate.connect_to_custom(
+        #     url=url,
+        #     timeout_config=(timeout, timeout)  # (connect_timeout, read_timeout)
+        # )
+        client = weaviate.connect_to_local()
         logger.info(f"Connected to Weaviate at {url}")
         return client
     except Exception as e:

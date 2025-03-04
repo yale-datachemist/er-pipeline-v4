@@ -23,7 +23,7 @@ from utils import (
 )
 from indexing import impute_null_field, get_candidates
 from enhanced_features import (
-    enhance_feature_vector, extract_enhanced_temporal_features,
+    enhance_feature_vector,
     generate_interaction_features
 )
 # Try to import enhanced date processing integration

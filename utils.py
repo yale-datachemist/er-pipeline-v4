@@ -244,6 +244,33 @@ def batch_generator(items: List[Any], batch_size: int):
     for i in range(0, len(items), batch_size):
         yield items[i:i + batch_size]
 
+def save_checkpoint(file_path: str, data: Any, config: Dict[str, Any]) -> None:
+    """
+    Save checkpoint data to a file.
+    
+    Args:
+        file_path: Path to save the checkpoint
+        data: Data to be saved
+        config: Configuration dictionary
+    """
+    checkpoint_dir = config.get("checkpoint_dir", "data/checkpoints")
+    full_path = os.path.join(checkpoint_dir, file_path)
+    
+    # Create directory if it doesn't exist
+    os.makedirs(os.path.dirname(full_path), exist_ok=True)
+    
+    # Determine file extension and save accordingly
+    if file_path.endswith('.json'):
+        with open(full_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    elif file_path.endswith('.pkl'):
+        import pickle
+        with open(full_path, 'wb') as f:
+            pickle.dump(data, f)
+    else:
+        raise ValueError(f"Unsupported checkpoint file format: {file_path}")
+    
+    logging.info(f"Saved checkpoint: {full_path}")
 
 if __name__ == "__main__":
     # Simple test to ensure the module loads correctly
