@@ -12,6 +12,7 @@ import re
 import time
 from collections import Counter, defaultdict
 from typing import Dict, List, Any, Tuple, Set, Optional
+import csv
 
 import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend
