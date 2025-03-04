@@ -15,8 +15,8 @@
   
   "use_enhanced_features": true,
   "enhanced_feature_interactions": true,
-  "enhanced_temporal_features": true,
-  "robust_date_handling": true,
+  "enhanced_temporal_features": false,
+  "robust_date_handling": false,
   "fuzzy_year_threshold": 10,
   
   "embedding_model": "text-embedding-3-small",
@@ -46,7 +46,7 @@
   
   "log_level": "INFO",
   "parallel_workers": 8,
-  "nullable_fields_to_use": ["attribution", "provision", "subjects", "genres", "relatedWork"],
+  "nullable_fields_to_use": ["attribution", "provision", "subjects", "genres"],
   "skip_bulk_imputation": true
 
   

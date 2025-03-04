@@ -471,7 +471,7 @@ class AnalysisReporter:
         y_pred = (y_pred_proba >= 0.5).astype(int)
         
         # Report
-        self.analyze_feature_correlations_with_errors(
+        analyze_feature_correlations_with_errors(
             X_test,
             y_test,
             y_pred,
@@ -1272,73 +1272,73 @@ class AnalysisReporter:
         plt.savefig(os.path.join(self.figures_dir, "pipeline_timing.png"))
         plt.close()
 
-    def analyze_feature_correlations_with_errors(
-        X_test: np.ndarray,
-        y_test: np.ndarray,
-        y_pred: np.ndarray,
-        feature_names: List[str],
-        output_dir: str
-    ) -> None:
-        """
-        Analyze correlations between features and prediction errors.
+def analyze_feature_correlations_with_errors(
+    X_test: np.ndarray,
+    y_test: np.ndarray,
+    y_pred: np.ndarray,
+    feature_names: List[str],
+    output_dir: str
+) -> None:
+    """
+    Analyze correlations between features and prediction errors.
+    
+    Args:
+        X_test: Test feature matrix
+        y_test: True labels
+        y_pred: Predicted labels
+        feature_names: Names of features
+        output_dir: Directory to save analysis
+    """
+    logger.info("Analyzing feature correlations with prediction errors")
+    
+    # Create error indicator (1 if misclassified, 0 if correct)
+    errors = (y_test != y_pred).astype(int)
+    
+    # Calculate correlation between each feature and errors
+    correlations = []
+    for i in range(X_test.shape[1]):
+        if i < len(feature_names):
+            try:
+                corr = np.corrcoef(X_test[:, i], errors)[0, 1]
+                correlations.append((feature_names[i], corr))
+            except:
+                # Handle potential errors (e.g., constant feature values)
+                correlations.append((feature_names[i], 0.0))
+    
+    # Sort by absolute correlation
+    correlations.sort(key=lambda x: abs(x[1]), reverse=True)
+    
+    # Save to CSV
+    csv_path = os.path.join(output_dir, "feature_error_correlations.csv")
+    
+    with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        writer.writerow(['Feature', 'Correlation with Errors'])
         
-        Args:
-            X_test: Test feature matrix
-            y_test: True labels
-            y_pred: Predicted labels
-            feature_names: Names of features
-            output_dir: Directory to save analysis
-        """
-        logger.info("Analyzing feature correlations with prediction errors")
-        
-        # Create error indicator (1 if misclassified, 0 if correct)
-        errors = (y_test != y_pred).astype(int)
-        
-        # Calculate correlation between each feature and errors
-        correlations = []
-        for i in range(X_test.shape[1]):
-            if i < len(feature_names):
-                try:
-                    corr = np.corrcoef(X_test[:, i], errors)[0, 1]
-                    correlations.append((feature_names[i], corr))
-                except:
-                    # Handle potential errors (e.g., constant feature values)
-                    correlations.append((feature_names[i], 0.0))
-        
-        # Sort by absolute correlation
-        correlations.sort(key=lambda x: abs(x[1]), reverse=True)
-        
-        # Save to CSV
-        csv_path = os.path.join(output_dir, "feature_error_correlations.csv")
-        
-        with open(csv_path, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f)
-            writer.writerow(['Feature', 'Correlation with Errors'])
-            
-            for feature, corr in correlations:
-                writer.writerow([feature, corr])
-        
-        logger.info(f"Saved feature error correlation analysis to {csv_path}")
-        
-        # Create visualization
-        plt.figure(figsize=(12, 8))
-        
-        # Plot top 20 features or all if less than 20
-        top_n = min(20, len(correlations))
-        top_features = [x[0] for x in correlations[:top_n]]
-        top_correlations = [x[1] for x in correlations[:top_n]]
-        
-        plt.barh(range(top_n), [abs(c) for c in top_correlations], color=['red' if c > 0 else 'blue' for c in top_correlations])
-        plt.yticks(range(top_n), top_features)
-        plt.xlabel('Absolute Correlation with Prediction Errors')
-        plt.title('Features Most Correlated with Prediction Errors')
-        plt.tight_layout()
-        
-        # Save figure
-        figure_path = os.path.join(output_dir, "figures", "feature_error_correlations.png")
-        os.makedirs(os.path.dirname(figure_path), exist_ok=True)
-        plt.savefig(figure_path)
-        plt.close()
+        for feature, corr in correlations:
+            writer.writerow([feature, corr])
+    
+    logger.info(f"Saved feature error correlation analysis to {csv_path}")
+    
+    # Create visualization
+    plt.figure(figsize=(12, 8))
+    
+    # Plot top 20 features or all if less than 20
+    top_n = min(20, len(correlations))
+    top_features = [x[0] for x in correlations[:top_n]]
+    top_correlations = [x[1] for x in correlations[:top_n]]
+    
+    plt.barh(range(top_n), [abs(c) for c in top_correlations], color=['red' if c > 0 else 'blue' for c in top_correlations])
+    plt.yticks(range(top_n), top_features)
+    plt.xlabel('Absolute Correlation with Prediction Errors')
+    plt.title('Features Most Correlated with Prediction Errors')
+    plt.tight_layout()
+    
+    # Save figure
+    figure_path = os.path.join(output_dir, "figures", "feature_error_correlations.png")
+    os.makedirs(os.path.dirname(figure_path), exist_ok=True)
+    plt.savefig(figure_path)
+    plt.close()
 
 def analyze_pipeline_performance(
     pipeline_instance: Any,
