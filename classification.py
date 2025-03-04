@@ -26,6 +26,17 @@ from enhanced_features import (
     enhance_feature_vector, extract_enhanced_temporal_features,
     generate_interaction_features
 )
+# Try to import enhanced date processing integration
+try:
+    from integration import (
+        check_enhanced_date_processing_available,
+        update_config_for_enhanced_dates,
+        extract_years_from_text,
+        get_life_dates
+    )
+    INTEGRATION_AVAILABLE = True
+except ImportError:
+    INTEGRATION_AVAILABLE = False
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -166,6 +177,10 @@ def engineer_features(
     Returns:
         Tuple of (X, y) feature matrix and labels
     """
+    # Update config if integration module is available
+    if INTEGRATION_AVAILABLE:
+        config = update_config_for_enhanced_dates(config)
+    
     X, y = [], []
     feature_names = []
     
@@ -239,16 +254,45 @@ def engineer_features(
             features.append(0.0)
         
         # Check for exact match with life dates (strong signal)
-        has_life_dates1 = bool(re.search(r'\d{4}-\d{4}', person_str1))
-        has_life_dates2 = bool(re.search(r'\d{4}-\d{4}', person_str2))
-        exact_match_with_dates = person_str1 == person_str2 and (has_life_dates1 or has_life_dates2)
-        features.append(1.0 if exact_match_with_dates else 0.0)
+        use_enhanced_dates = config.get("use_enhanced_date_processing", False) and INTEGRATION_AVAILABLE
+        
+        if use_enhanced_dates:
+            # Use enhanced date extraction
+            birth_year1, death_year1, conf1 = get_life_dates(person_str1, True)
+            birth_year2, death_year2, conf2 = get_life_dates(person_str2, True)
+            
+            # Enhanced life dates match
+            has_life_dates1 = birth_year1 is not None or death_year1 is not None
+            has_life_dates2 = birth_year2 is not None or death_year2 is not None
+            
+            # Calculate enhanced match score with confidence
+            if (birth_year1 == birth_year2 and birth_year1 is not None and 
+                death_year1 == death_year2 and death_year1 is not None):
+                life_dates_match = 1.0 * ((conf1 + conf2) / 2)  # Weight by confidence
+            else:
+                life_dates_match = 0.0
+            
+            features.append(1.0 if has_life_dates1 or has_life_dates2 else 0.0)
+            features.append(life_dates_match)
+        else:
+            # Basic extraction (backward compatible)
+            has_life_dates1 = bool(re.search(r'\d{4}-\d{4}', person_str1))
+            has_life_dates2 = bool(re.search(r'\d{4}-\d{4}', person_str2))
+            exact_match_with_dates = person_str1 == person_str2 and (has_life_dates1 or has_life_dates2)
+            features.append(1.0 if exact_match_with_dates else 0.0)
         
         # Add basic temporal overlap feature (will be enhanced if enabled)
         prov_str1 = unique_strings.get(fields1.get('provision', "NULL"), "")
         prov_str2 = unique_strings.get(fields2.get('provision', "NULL"), "")
-        years1 = extract_years(prov_str1)
-        years2 = extract_years(prov_str2)
+        
+        if use_enhanced_dates:
+            # Use enhanced year extraction
+            years1 = extract_years_from_text(prov_str1, True)
+            years2 = extract_years_from_text(prov_str2, True)
+        else:
+            # Basic year extraction
+            years1 = extract_years(prov_str1)
+            years2 = extract_years(prov_str2)
         
         # Add temporal overlap indicator
         if years1 and years2:
@@ -260,7 +304,17 @@ def engineer_features(
         # Create feature names if this is the first pair
         if not feature_names:
             base_names = [f"{field}_sim" for field in fields]
-            base_names.extend(['person_lev_sim', 'has_life_dates', 'temporal_overlap'])
+            
+            if use_enhanced_dates:
+                base_names.extend([
+                    'person_lev_sim', 
+                    'has_life_dates',
+                    'life_dates_match_score',
+                    'temporal_overlap'
+                ])
+            else:
+                base_names.extend(['person_lev_sim', 'has_life_dates', 'temporal_overlap'])
+                
             feature_names = base_names
         
         # Enhance features if enabled
@@ -289,7 +343,6 @@ def engineer_features(
     config["feature_names"] = feature_names
     
     return np.array(X), np.array(y)
-
 
 def train_classifier(
     X: np.ndarray, 
@@ -443,7 +496,8 @@ def llm_fallback(
 def derive_canonical_name(
     community: Set[str],
     record_field_hashes: Dict[str, Dict[str, str]],
-    unique_strings: Dict[str, str]
+    unique_strings: Dict[str, str],
+    config: Dict[str, Any] = None
 ) -> str:
     """
     Derive canonical name for a community of records.
@@ -452,27 +506,49 @@ def derive_canonical_name(
         community: Set of record IDs
         record_field_hashes: Dictionary of record ID → {field → hash}
         unique_strings: Dictionary of hash → string value
+        config: Configuration dictionary (optional)
         
     Returns:
         Canonical name
     """
+    # Default config
+    if config is None:
+        config = {}
+    
     # Collect all person names in the community
     person_names = []
+    person_with_dates = []
+    
     for record_id in community:
         person_hash = record_field_hashes.get(record_id, {}).get('person', "NULL")
         if person_hash != "NULL":
             person_name = unique_strings.get(person_hash, "")
             person_names.append(person_name)
+            
+            # Check for life dates
+            use_enhanced = config.get("use_enhanced_date_processing", False) and INTEGRATION_AVAILABLE
+            
+            if use_enhanced:
+                birth_year, death_year, confidence = get_life_dates(person_name, True)
+                if birth_year is not None or death_year is not None:
+                    person_with_dates.append((person_name, confidence))
+            else:
+                if re.search(r'\d{4}-\d{4}', person_name):
+                    person_with_dates.append((person_name, 1.0))
     
     if not person_names:
         return "Unknown Person"
     
     # Prefer names with life dates
-    names_with_dates = [name for name in person_names if re.search(r'\d{4}-\d{4}', name)]
-    
-    if names_with_dates:
-        # Return the most detailed name with dates
-        return max(names_with_dates, key=len)
+    if person_with_dates:
+        # Use the name with highest confidence if enhanced dates are used
+        if config.get("use_enhanced_date_processing", False) and INTEGRATION_AVAILABLE:
+            # Sort by confidence (descending)
+            person_with_dates.sort(key=lambda x: x[1], reverse=True)
+            return person_with_dates[0][0]
+        else:
+            # Return the most detailed name with dates
+            return max((name for name, _ in person_with_dates), key=len)
     else:
         # Return the most frequent name
         name_counts = {}
@@ -537,6 +613,10 @@ def classify_and_cluster(
     Returns:
         List of entity clusters
     """
+    # Update config for enhanced date processing if available
+    if INTEGRATION_AVAILABLE:
+        config = update_config_for_enhanced_dates(config)
+
     # Get all record IDs
     record_ids = list(record_field_hashes.keys())
     logger.info(f"Processing {len(record_ids)} records for classification")
