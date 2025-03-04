@@ -27,7 +27,7 @@ from utils import (
 from indexing import impute_null_field, get_candidates
 from enhanced_features import (
     enhance_feature_vector,
-    generate_interaction_features
+    generate_high_value_interaction_features
 )
 # Try to import enhanced date processing integration
 try:
@@ -407,13 +407,24 @@ def engineer_features(
      Returns:
         Tuple of (X, y, feature_names)
     """
+
     # Start overall timing
     total_start_time = time.time()
     logger.info("====== STARTING FEATURE ENGINEERING ======")
     
     # Update config if integration module is available
-    if INTEGRATION_AVAILABLE:
-        config = update_config_for_enhanced_dates(config)
+    # if INTEGRATION_AVAILABLE:
+    #     config = update_config_for_enhanced_dates(config)
+
+    # Override configuration to disable enhanced date processing
+    config = config.copy()  # Create a copy to avoid modifying the original
+    config["use_enhanced_date_processing"] = False
+    config["enhanced_temporal_features"] = False
+    config["robust_date_handling"] = False
+    
+    # Keep interaction features enabled
+    config["use_enhanced_features"] = False
+    config["enhanced_feature_interactions"] = True
     
     # Initialize profiling dictionaries
     timings = defaultdict(float)
@@ -789,7 +800,11 @@ def classify_and_cluster(
     config: Dict[str, Any]
 ) -> List[Dict[str, Any]]:
     """
-    Classify record pairs and cluster entities.
+    Classify record pairs and cluster entities using ANN-based blocking with person vectors.
+    
+    This implementation uses Approximate Nearest Neighbor (ANN) search to find similar
+    person vectors, effectively using the 'person' field as a blocking key to limit
+    the number of pairwise comparisons.
     """
     # Update config for enhanced date processing if available
     if INTEGRATION_AVAILABLE:
@@ -822,17 +837,25 @@ def classify_and_cluster(
     confidence_threshold = config.get("confidence_threshold", 0.7)
     candidate_limit = config.get("candidate_limit", 100)
     
-    processed_pairs = set()  # Track processed pairs to avoid duplicates
+    # Create a lookup from person hash to record IDs for efficient candidate matching
+    logger.info("Building person hash to record mapping")
+    person_hash_to_records = defaultdict(list)
+    for record_id, fields in tqdm(record_field_hashes.items(), desc="Building index"):
+        person_hash = fields.get('person', "NULL")
+        if person_hash != "NULL":
+            person_hash_to_records[person_hash].append(record_id)
     
-    # Collect all candidate pairs first before processing
-    all_candidate_pairs = []
+    processed_pairs = set()  # Track processed pairs to avoid duplicates
     
     for i in range(0, len(record_ids), batch_size):
         batch_ids = record_ids[i:i+batch_size]
         logger.info(f"Processing batch {i//batch_size + 1}/{(len(record_ids)-1)//batch_size + 1}")
         
-        # Process each record in the batch to find candidates
-        for record_id in tqdm(batch_ids, desc="Finding candidates"):
+        # Collect candidate pairs for this batch
+        batch_candidate_pairs = []
+        
+        # Process each record in the batch to find candidates using ANN
+        for record_id in tqdm(batch_ids, desc="Finding candidates via ANN"):
             # Get person hash for this record
             person_hash = record_field_hashes.get(record_id, {}).get('person', "NULL")
             if person_hash == "NULL":
@@ -843,41 +866,46 @@ def classify_and_cluster(
             if person_vector is None:
                 continue
             
-            # Query Weaviate for similar person vectors
+            # Query Weaviate for similar person vectors (ANN-based blocking)
             candidates = get_candidates(
                 person_vector=person_vector,
                 client=weaviate_client,
                 limit=candidate_limit
             )
             
-            # Get candidate record IDs
-            candidate_hashes = [candidate['hash'] for candidate in candidates]
-            
-            # Find records with these person hashes
-            for candidate_hash in candidate_hashes:
-                for rid, fields in record_field_hashes.items():
-                    if fields.get('person') == candidate_hash and rid != record_id:
-                        # Create a candidate pair
-                        pair_key = tuple(sorted([record_id, rid]))
-                        
-                        # Skip if this pair has been processed
-                        if pair_key in processed_pairs:
-                            continue
-                        
-                        processed_pairs.add(pair_key)
-                        all_candidate_pairs.append((record_id, rid, None))  # Label doesn't matter here
-        
-        # Process all candidate pairs for this batch in one go
-        logger.info(f"Found {len(all_candidate_pairs)} candidate pairs to classify")
+            # Get candidate record IDs directly from the candidate hashes
+            for candidate in candidates:
+                candidate_hash = candidate['hash']
+                # Skip if it's the same hash as the current record
+                if candidate_hash == person_hash:
+                    continue
+                
+                # Get records with this person hash using our lookup map
+                candidate_records = person_hash_to_records.get(candidate_hash, [])
+                for candidate_record_id in candidate_records:
+                    # Skip self comparisons
+                    if candidate_record_id == record_id:
+                        continue
+                    
+                    # Create a candidate pair
+                    pair_key = tuple(sorted([record_id, candidate_record_id]))
+                    
+                    # Skip if this pair has been processed
+                    if pair_key in processed_pairs:
+                        continue
+                    
+                    processed_pairs.add(pair_key)
+                    batch_candidate_pairs.append((record_id, candidate_record_id, None))
         
         # Skip if no pairs to process
-        if not all_candidate_pairs:
+        if not batch_candidate_pairs:
             logger.info("No candidate pairs to process in this batch")
             continue
             
         # Generate features and classify all pairs at once
-        X, _ = engineer_features(
-            all_candidate_pairs,
+        logger.info(f"Classifying {len(batch_candidate_pairs)} candidate pairs")
+        X, _, _ = engineer_features(
+            batch_candidate_pairs,
             record_field_hashes,
             unique_strings,
             embeddings,
@@ -889,7 +917,7 @@ def classify_and_cluster(
         probabilities = classifier.predict_proba(X)
         
         # Process classification results
-        for idx, ((id1, id2, _), probability) in enumerate(zip(all_candidate_pairs, probabilities)):
+        for idx, ((id1, id2, _), probability) in enumerate(zip(batch_candidate_pairs, probabilities)):
             # Add edge to graph if probability exceeds threshold
             if probability >= confidence_threshold:
                 G.add_edge(id1, id2, weight=probability)
@@ -914,11 +942,6 @@ def classify_and_cluster(
                     
                     if llm_result is not None and llm_result > 0.5:
                         G.add_edge(id1, id2, weight=llm_result)
-        
-        # Clear the list of candidate pairs for the next batch
-        all_candidate_pairs = []
-    
-    # Rest of clustering code remains the same...
     
     # Apply community detection for clustering
     logger.info("Applying community detection algorithm")
@@ -940,7 +963,7 @@ def classify_and_cluster(
             logger.warning(f"Skipping large community with {len(community)} members")
             continue
         
-        canonical_name = derive_canonical_name(community, record_field_hashes, unique_strings)
+        canonical_name = derive_canonical_name(community, record_field_hashes, unique_strings, config)
         confidence = calculate_cluster_confidence(community, G)
         
         cluster = {

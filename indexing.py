@@ -209,6 +209,21 @@ def vector_search(
     field_type: str,
     limit: int = 10
 ) -> List[Dict[str, Any]]:
+    """
+    Perform Approximate Nearest Neighbor search in Weaviate.
+    
+    This implementation uses Weaviate's HNSW algorithm for ANN search and filters
+    results to only include vectors of the specified field type.
+    
+    Args:
+        client: Weaviate client
+        query_vector: Query vector for similarity search
+        field_type: Field type to search in (e.g., "person", "title")
+        limit: Maximum number of results
+    
+    Returns:
+        List of matching objects with their vectors and similarity scores
+    """
     collection = client.collections.get("UniqueStringsByField")
     
     try:
@@ -325,7 +340,10 @@ def get_candidates(
     limit: int = 100
 ) -> List[Dict[str, Any]]:
     """
-    Get candidate matches for a person vector.
+    Get candidate matches for a person vector using Approximate Nearest Neighbor search.
+    
+    This function implements the ANN-based blocking approach by retrieving the most
+    similar person vectors according to cosine similarity.
     
     Args:
         person_vector: Vector representation of a person
@@ -333,7 +351,7 @@ def get_candidates(
         limit: Maximum number of candidates
     
     Returns:
-        List of candidate matches
+        List of candidate matches with their vectors and similarity scores
     """
     return vector_search(
         client=client,

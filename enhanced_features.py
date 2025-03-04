@@ -857,101 +857,53 @@ def compare_provision_dates_without_life_dates(
     return features
 
 
-def generate_interaction_features(
+def generate_high_value_interaction_features(
     base_features: Dict[str, float]
 ) -> Dict[str, float]:
     """
-    Generate interaction terms between important features.
+    Generate only high-value interaction features for entity resolution.
+    
+    This optimized version focuses on the most discriminative interaction features
+    for bibliographic data, reducing feature count and preventing overfitting.
     
     Args:
         base_features: Dictionary of base features
         
     Returns:
-        Dictionary of interaction features
+        Dictionary of high-value interaction features
     """
     interaction_features = {}
     
-    # List of core features to consider for interactions
-    semantic_features = [
-        'person_sim', 'title_sim', 'subjects_sim', 'roles_sim'
-    ]
+    # 1. CRITICAL: Name + Temporal compatibility
+    # This is the most important interaction for bibliographic data
+    if all(f in base_features for f in ['person_sim', 'temporal_overlap']):
+        # Multiply exact vector similarity with temporal compatibility
+        interaction_features['name_temporal_interaction'] = (
+            base_features['person_sim'] * base_features['temporal_overlap']
+        )
     
-    temporal_features = [
-        'temporal_overlap', 'temporal_span_similarity', 'publication_era_match',
-        'min_year_difference', 'max_year_difference', 'median_year_difference'
-    ]
+    # 2. Person name string similarity reinforcement
+    # Strengthen the signal when both vector and string similarity agree
+    if all(f in base_features for f in ['person_sim', 'person_lev_sim']):
+        interaction_features['name_string_reinforcement'] = (
+            base_features['person_sim'] * base_features['person_lev_sim']
+        )
     
-    string_features = ['person_lev_sim']
-    
-    domain_features = ['subjects_sim', 'genres_sim', 'roles_sim']
-    
-    # Only use features that exist in the base_features
-    semantic_features = [f for f in semantic_features if f in base_features]
-    temporal_features = [f for f in temporal_features if f in base_features]
-    string_features = [f for f in string_features if f in base_features]
-    domain_features = [f for f in domain_features if f in base_features]
-    
-    # 1. Interactions between semantic similarity and string similarity
-    for sem_feat in semantic_features:
-        for str_feat in string_features:
-            if sem_feat != str_feat:  # Avoid self-interaction
-                key = f"{sem_feat}_{str_feat}_interaction"
-                interaction_features[key] = base_features[sem_feat] * base_features[str_feat]
-    
-    # 2. Interactions between temporal features and other features
-    for temp_feat in temporal_features:
-        # Temporal x Person Name
-        if 'person_sim' in base_features:
-            key = f"{temp_feat}_person_sim_interaction"
-            interaction_features[key] = base_features[temp_feat] * base_features['person_sim']
-        
-        if 'person_lev_sim' in base_features:
-            key = f"{temp_feat}_person_lev_interaction"
-            interaction_features[key] = base_features[temp_feat] * base_features['person_lev_sim']
-        
-        # Temporal x Role (especially important for works published posthumously)
-        if 'roles_sim' in base_features:
-            key = f"{temp_feat}_roles_interaction" 
-            interaction_features[key] = base_features[temp_feat] * base_features['roles_sim']
-    
-    # 3. Interactions between subject/genre and other features
-    for domain_feat in domain_features:
-        # Extra weight when both subject and person match
-        if 'person_sim' in base_features:
-            key = f"{domain_feat}_person_sim_interaction"
-            interaction_features[key] = base_features[domain_feat] * base_features['person_sim']
-        
-        # Subject/genre and temporal features interaction
-        for temp_feat in temporal_features[:2]:  # Only use main temporal features
-            key = f"{domain_feat}_{temp_feat}_interaction"
-            interaction_features[key] = base_features[domain_feat] * base_features[temp_feat]
-    
-    # 4. Special interactions for strong signals
-    # When person names match exactly AND temporal overlap
+    # 3. Binary indicator for exact name + compatible dates
+    # Critical for catching obvious matches with high confidence
     if all(f in base_features for f in ['person_lev_sim', 'temporal_overlap']):
-        # Higher weight for exact name match with temporal overlap
         exact_match_temporal = (base_features['person_lev_sim'] > 0.9) and (base_features['temporal_overlap'] > 0.5)
         interaction_features['exact_name_temporal_match'] = 1.0 if exact_match_temporal else 0.0
     
-    # 5. Life dates interaction (if available)
-    if 'has_life_dates' in base_features and 'temporal_overlap' in base_features:
-        interaction_features['life_dates_temporal_interaction'] = (
-            base_features['has_life_dates'] * base_features['temporal_overlap']
+    # 4. Life dates indicator + person name
+    # Strong signal when life dates match and appear in name
+    if all(f in base_features for f in ['has_life_dates', 'person_sim']):
+        interaction_features['name_with_life_dates'] = (
+            base_features['has_life_dates'] * base_features['person_sim']
         )
     
-    # 6. Non-linear transformations
-    # Square of person similarity - emphasizes high similarity
-    if 'person_sim' in base_features:
-        interaction_features['person_sim_squared'] = base_features['person_sim'] ** 2
-    
-    # Product of all temporal features - strong signal when all align
-    if len(temporal_features) >= 3:
-        temp_product = 1.0
-        for feat in temporal_features[:3]:  # Use first 3 temporal features
-            temp_product *= base_features[feat]
-        interaction_features['temporal_consensus'] = temp_product
-    
-    # Harmonic mean of key features
+    # 5. Title-Person harmonic mean
+    # Better than simple multiplication for balancing the importance
     if all(f in base_features for f in ['person_sim', 'title_sim']):
         if base_features['person_sim'] > 0 and base_features['title_sim'] > 0:
             harmonic_mean = 2 * (base_features['person_sim'] * base_features['title_sim']) / (
@@ -961,26 +913,33 @@ def generate_interaction_features(
         else:
             interaction_features['person_title_harmonic'] = 0.0
     
-    # 7. Asymmetric life dates interactions (if available)
-    if 'has_asymmetric_life_dates' in base_features and base_features['has_asymmetric_life_dates'] > 0:
-        # Increase importance of asymmetry compatibility feature
-        if 'asymmetry_compatibility' in base_features:
-            if 'person_lev_sim' in base_features:
-                # If names are very similar, boost the compatibility signal
-                interaction_features['asymmetry_name_interaction'] = (
-                    base_features['asymmetry_compatibility'] * 
-                    (0.5 + 0.5 * base_features['person_lev_sim'])
-                )
-            
-            # If roles match well, boost compatibility
-            if 'roles_sim' in base_features:
-                interaction_features['asymmetry_roles_interaction'] = (
-                    base_features['asymmetry_compatibility'] * 
-                    base_features['roles_sim']
-                )
+    # 6. Role consistency + temporal compatibility
+    # Critical for handling posthumous publications
+    if all(f in base_features for f in ['roles_sim', 'temporal_overlap']):
+        interaction_features['role_temporal_interaction'] = (
+            base_features['roles_sim'] * base_features['temporal_overlap']
+        )
+    
+    # 7. Asymmetric life dates handling (only if applicable)
+    # For when one record has life dates but the other doesn't
+    if ('has_asymmetric_life_dates' in base_features and
+            'asymmetry_compatibility' in base_features and
+            'person_sim' in base_features and
+            base_features['has_asymmetric_life_dates'] > 0):
+        
+        # Weight asymmetry compatibility by name similarity
+        interaction_features['asymmetry_name_weighting'] = (
+            base_features['asymmetry_compatibility'] * base_features['person_sim']
+        )
+    
+    # 8. Person name + squared temporal feature
+    # Emphasizes the importance of temporal compatibility
+    if all(f in base_features for f in ['person_sim', 'temporal_overlap']):
+        interaction_features['name_temporal_squared'] = (
+            base_features['person_sim'] * (base_features['temporal_overlap'] ** 2)
+        )
     
     return interaction_features
-
 
 def enhance_feature_vector(
     base_features: List[float],
@@ -991,7 +950,7 @@ def enhance_feature_vector(
     record_id2: str
 ) -> Tuple[List[float], List[str]]:
     """
-    Enhance an existing feature vector with advanced features.
+    Enhance an existing feature vector with high-value interaction features.
     
     Args:
         base_features: Base feature vector
@@ -1025,132 +984,29 @@ def enhance_feature_vector(
     prov_str1 = unique_strings.get(prov_hash1, "")
     prov_str2 = unique_strings.get(prov_hash2, "")
     
-    # Get roles strings if available
-    roles_hash1 = fields1.get('roles', "NULL")
-    roles_hash2 = fields2.get('roles', "NULL")
+    # Basic date and temporal features
+    # Extract basic life dates
+    birth_year1, death_year1 = extract_life_dates(person_str1)
+    birth_year2, death_year2 = extract_life_dates(person_str2)
     
-    roles_str1 = unique_strings.get(roles_hash1, "")
-    roles_str2 = unique_strings.get(roles_hash2, "")
+    # Extract years from provision strings
+    from utils import extract_years
+    years1 = extract_years(prov_str1)
+    years2 = extract_years(prov_str2)
     
-    # Use enhanced date processing if available
-    if ENHANCED_DATE_PROCESSING_AVAILABLE:
-        logger.debug("Using enhanced date processing")
-        
-        # Extract enhanced life dates
-        life_dates1 = extract_life_dates_enhanced(person_str1)
-        life_dates2 = extract_life_dates_enhanced(person_str2)
-        
-        # Extract dates from provision strings
-        provision_dates1 = extract_dates_from_provision(prov_str1)
-        provision_dates2 = extract_dates_from_provision(prov_str2)
-        
-        # Generate integrated features using enhanced date processing
-        enhanced_date_features = integrate_enhanced_dates_with_base_features(
-            base_features_dict,
-            person_str1,
-            person_str2,
-            prov_str1,
-            prov_str2,
-            roles_str1,
-            roles_str2
-        )
-        
-        # Update base features with enhanced date features
-        base_features_dict.update(enhanced_date_features)
-        
-        # Add asymmetry handling for life dates
-        asymmetry_features = handle_life_date_asymmetry(
-            life_dates1, 
-            life_dates2,
-            provision_dates1,
-            provision_dates2
-        )
-        base_features_dict.update(asymmetry_features)
-        
-        # If both lack life dates, use enhanced provision date comparison
-        if not (life_dates1[0] or life_dates1[1] or life_dates1[2]) and not (life_dates2[0] or life_dates2[1] or life_dates2[2]):
-            provision_features = compare_provision_dates_without_life_dates(
-                provision_dates1,
-                provision_dates2
-            )
-            base_features_dict.update(provision_features)
-        
-    else:
-        # Fall back to basic date processing
-        logger.debug("Using basic date processing")
-        
-        # Extract basic life dates
-        birth_year1, death_year1 = extract_life_dates(person_str1)
-        birth_year2, death_year2 = extract_life_dates(person_str2)
-        
-        # Extract years from provision strings
-        from utils import extract_years
-        years1 = extract_years(prov_str1)
-        years2 = extract_years(prov_str2)
-        
-        # Generate robust temporal features with basic approach
-        temporal_features = analyze_robust_temporal_features(
-            list(years1), list(years2), birth_year1, death_year1, birth_year2, death_year2
-        )
-        
-        # Update base features with basic temporal features
-        base_features_dict.update(temporal_features)
-        
-        # Add basic life dates features
+    # Add basic temporal features if not already present
+    if 'temporal_overlap' not in base_features_dict and years1 and years2:
+        intersection = years1.intersection(years2)
+        union = years1.union(years2)
+        base_features_dict['temporal_overlap'] = len(intersection) / len(union) if union else 0.5
+    
+    if 'has_life_dates' not in base_features_dict:
         has_life_dates1 = birth_year1 is not None or death_year1 is not None
         has_life_dates2 = birth_year2 is not None or death_year2 is not None
-        base_features_dict['has_life_dates_either'] = 1.0 if (has_life_dates1 or has_life_dates2) else 0.0
-        base_features_dict['has_life_dates_both'] = 1.0 if (has_life_dates1 and has_life_dates2) else 0.0
-        
-        # Life dates exact match features
-        if birth_year1 and birth_year2 and birth_year1 == birth_year2:
-            if death_year1 and death_year2 and death_year1 == death_year2:
-                base_features_dict['exact_life_dates_match'] = 1.0
-            else:
-                base_features_dict['exact_birth_only_match'] = 1.0
-        else:
-            base_features_dict['exact_life_dates_match'] = 0.0
-            base_features_dict['exact_birth_only_match'] = 0.0
-            
-        # Add basic asymmetry features
-        asymmetric = has_life_dates1 != has_life_dates2
-        base_features_dict['has_asymmetric_life_dates'] = 1.0 if asymmetric else 0.0
-        
-        if asymmetric:
-            # Basic compatibility check for asymmetric dates
-            if has_life_dates1:
-                if years2 and death_year1:
-                    # Check if works published after death
-                    posthumous = [y > death_year1 for y in years2]
-                    if all(posthumous) and death_year1 < 1900:
-                        # Historical figure pattern
-                        base_features_dict['asymmetry_compatibility'] = 0.7
-                    elif any(posthumous) and any(not p for p in posthumous):
-                        # Mix of posthumous and lifetime works
-                        base_features_dict['asymmetry_compatibility'] = 0.6
-                    else:
-                        base_features_dict['asymmetry_compatibility'] = 0.5
-                else:
-                    base_features_dict['asymmetry_compatibility'] = 0.5
-            else:
-                if years1 and death_year2:
-                    # Check if works published after death
-                    posthumous = [y > death_year2 for y in years1]
-                    if all(posthumous) and death_year2 < 1900:
-                        # Historical figure pattern
-                        base_features_dict['asymmetry_compatibility'] = 0.7
-                    elif any(posthumous) and any(not p for p in posthumous):
-                        # Mix of posthumous and lifetime works
-                        base_features_dict['asymmetry_compatibility'] = 0.6
-                    else:
-                        base_features_dict['asymmetry_compatibility'] = 0.5
-                else:
-                    base_features_dict['asymmetry_compatibility'] = 0.5
-        else:
-            base_features_dict['asymmetry_compatibility'] = 0.5
+        base_features_dict['has_life_dates'] = 1.0 if (has_life_dates1 or has_life_dates2) else 0.0
     
-    # Generate interaction features
-    interaction_features = generate_interaction_features(base_features_dict)
+    # Generate high-value interaction features
+    interaction_features = generate_high_value_interaction_features(base_features_dict)
     
     # Combine all features
     enhanced_features_dict = {**base_features_dict, **interaction_features}
@@ -1160,5 +1016,3 @@ def enhance_feature_vector(
     enhanced_feature_values = [enhanced_features_dict[name] for name in enhanced_feature_names]
     
     return enhanced_feature_values, enhanced_feature_names
-    #enhanced_feature_names = [get_enhanced_feature_description(name) for name in all_feature_names]
-    #return final_features, enhanced_feature_names
