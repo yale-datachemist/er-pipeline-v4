@@ -147,7 +147,7 @@ class EntityResolutionPipeline:
             self.logger.info(f"Split into {len(train_pairs)} training pairs and {len(test_pairs)} test pairs")
 
             # Only engineer features for training data
-            X_train, y_train = engineer_features(
+            X_train, y_train, train_feature_names = engineer_features(
                 train_pairs,  # Only use training pairs here!
                 record_field_hashes, 
                 unique_strings, 
@@ -155,6 +155,9 @@ class EntityResolutionPipeline:
                 weaviate_client, 
                 self.config
             )
+
+            # Store feature names in config
+            self.config["feature_names"] = train_feature_names
 
             # Train classifier
             classifier = train_classifier(X_train, y_train, self.config)
@@ -165,7 +168,7 @@ class EntityResolutionPipeline:
 
             # Generate features for test set for evaluation
             self.logger.info("Engineering features for test set...")
-            X_test, y_test = engineer_features(
+            X_test, y_test, test_feature_names = engineer_features(
                 test_pairs,
                 record_field_hashes,
                 unique_strings,
@@ -173,6 +176,20 @@ class EntityResolutionPipeline:
                 weaviate_client,
                 self.config
             )
+
+            # Report results
+            from classification import generate_detailed_reports
+            # Use the actual feature names from test data
+            test_metrics = generate_detailed_reports(
+                X_test,
+                y_test,
+                classifier,
+                test_pairs,
+                record_field_hashes,
+                unique_strings,
+                test_feature_names,  # Use actual feature names, not config
+                self.config
+            )            
 
             stage_timings["feature_engineering_training"] = time.time() - feature_start
 

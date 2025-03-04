@@ -396,6 +396,9 @@ def engineer_features(
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Generate feature vectors for record pairs using parallel processing.
+
+     Returns:
+        Tuple of (X, y, feature_names)
     """
     # Start overall timing
     total_start_time = time.time()
@@ -521,7 +524,7 @@ def engineer_features(
     logger.info("====== FEATURE ENGINEERING COMPLETE ======")
     
     # Convert to numpy arrays
-    return np.array(X), np.array(y)
+    return np.array(X), np.array(y), feature_names
 
 def train_classifier(
     X: np.ndarray, 
@@ -1035,6 +1038,196 @@ def evaluate_clusters(
     
     return metrics
 
+def generate_detailed_reports(
+    X_test: np.ndarray,
+    y_test: np.ndarray,
+    y_pred: np.ndarray,
+    test_pairs: List[Tuple[str, str, bool]],
+    record_field_hashes: Dict[str, Dict[str, str]],
+    unique_strings: Dict[str, str],
+    feature_names: List[str],
+    config: Dict[str, Any]
+) -> None:
+    """
+    Generate detailed reports on classifier performance.
+    
+    Args:
+        X_test: Test feature matrix
+        y_test: True labels
+        y_pred: Predicted labels
+        test_pairs: Original test record pairs
+        record_field_hashes: Record field hashes
+        unique_strings: Dictionary of hash → string value
+        feature_names: Names of features
+        config: Configuration dictionary
+    """
+    output_dir = config.get("output_dir", "data/output")
+    reports_dir = os.path.join(output_dir, "reports")
+    os.makedirs(reports_dir, exist_ok=True)
+    
+    # Generate report of misclassified pairs
+    generate_misclassified_report(
+        X_test, y_test, y_pred, test_pairs, 
+        record_field_hashes, unique_strings, 
+        feature_names, reports_dir
+    )
+    
+    # Generate complete test dataset report
+    generate_test_dataset_report(
+        X_test, y_test, y_pred, test_pairs,
+        record_field_hashes, unique_strings,
+        feature_names, reports_dir
+    )
+    
+    logger.info(f"Detailed reports saved to {reports_dir}")
+
+def generate_misclassified_report(
+    X_test: np.ndarray,
+    y_test: np.ndarray,
+    y_pred: np.ndarray,
+    test_pairs: List[Tuple[str, str, bool]],
+    record_field_hashes: Dict[str, Dict[str, str]],
+    unique_strings: Dict[str, str],
+    feature_names: List[str],
+    output_dir: str
+) -> None:
+    """
+    Generate a CSV report of misclassified pairs.
+    
+    Args:
+        X_test: Test feature matrix
+        y_test: True labels
+        y_pred: Predicted labels
+        test_pairs: Original test record pairs
+        record_field_hashes: Record field hashes
+        unique_strings: Dictionary of hash → string value
+        feature_names: Names of features
+        output_dir: Directory to save report
+    """
+    misclassified_indices = np.where(y_test != y_pred)[0]
+    
+    if len(misclassified_indices) == 0:
+        logger.info("No misclassified pairs to report")
+        return
+    
+    # Create CSV file
+    csv_path = os.path.join(output_dir, "misclassified_pairs.csv")
+    
+    with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+        # Define headers
+        writer = csv.writer(f)
+        headers = [
+            'record_id1', 'record_id2', 
+            'person1', 'person2',
+            'title1', 'title2',
+            'provision1', 'provision2',
+            'true_label', 'predicted_label'
+        ]
+        # Add feature names to headers
+        headers.extend(feature_names)
+        
+        writer.writerow(headers)
+        
+        # Write rows for each misclassified pair
+        for idx in misclassified_indices:
+            if idx < len(test_pairs):
+                id1, id2, _ = test_pairs[idx]
+                
+                # Get field values
+                fields1 = record_field_hashes.get(id1, {})
+                fields2 = record_field_hashes.get(id2, {})
+                
+                person1 = unique_strings.get(fields1.get('person', "NULL"), "")
+                person2 = unique_strings.get(fields2.get('person', "NULL"), "")
+                
+                title1 = unique_strings.get(fields1.get('title', "NULL"), "")
+                title2 = unique_strings.get(fields2.get('title', "NULL"), "")
+                
+                provision1 = unique_strings.get(fields1.get('provision', "NULL"), "")
+                provision2 = unique_strings.get(fields2.get('provision', "NULL"), "")
+                
+                # Create row
+                row = [
+                    id1, id2,
+                    person1, person2,
+                    title1, title2,
+                    provision1, provision2,
+                    int(y_test[idx]), int(y_pred[idx])
+                ]
+                
+                # Add feature values
+                row.extend(X_test[idx].tolist())
+                
+                writer.writerow(row)
+    
+    logger.info(f"Saved report of {len(misclassified_indices)} misclassified pairs to {csv_path}")
+
+def generate_test_dataset_report(
+    X_test: np.ndarray,
+    y_test: np.ndarray,
+    y_pred: np.ndarray,
+    test_pairs: List[Tuple[str, str, bool]],
+    record_field_hashes: Dict[str, Dict[str, str]],
+    unique_strings: Dict[str, str],
+    feature_names: List[str],
+    output_dir: str
+) -> None:
+    """
+    Generate a complete report of the test dataset with feature vectors.
+    
+    Args:
+        X_test: Test feature matrix
+        y_test: True labels
+        y_pred: Predicted labels
+        test_pairs: Original test record pairs
+        record_field_hashes: Record field hashes
+        unique_strings: Dictionary of hash → string value
+        feature_names: Names of features
+        output_dir: Directory to save report
+    """
+    # Create CSV file
+    csv_path = os.path.join(output_dir, "test_dataset_complete.csv")
+    
+    with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+        # Define headers
+        writer = csv.writer(f)
+        headers = [
+            'record_id1', 'record_id2', 
+            'person1', 'person2',
+            'true_label', 'predicted_label', 'is_correct'
+        ]
+        # Add feature names to headers
+        headers.extend(feature_names)
+        
+        writer.writerow(headers)
+        
+        # Write rows for each test pair
+        for idx in range(len(test_pairs)):
+            if idx < len(test_pairs):
+                id1, id2, _ = test_pairs[idx]
+                
+                # Get field values
+                fields1 = record_field_hashes.get(id1, {})
+                fields2 = record_field_hashes.get(id2, {})
+                
+                person1 = unique_strings.get(fields1.get('person', "NULL"), "")
+                person2 = unique_strings.get(fields2.get('person', "NULL"), "")
+                
+                # Create row
+                row = [
+                    id1, id2,
+                    person1, person2,
+                    int(y_test[idx]), int(y_pred[idx]),
+                    int(y_test[idx] == y_pred[idx])
+                ]
+                
+                # Add feature values
+                if idx < len(X_test):
+                    row.extend(X_test[idx].tolist())
+                
+                writer.writerow(row)
+    
+    logger.info(f"Saved complete test dataset report with {len(test_pairs)} pairs to {csv_path}")
 
 if __name__ == "__main__":
     # Simple test to ensure the module loads correctly

@@ -29,6 +29,19 @@ except ImportError:
 # Configure logging
 logger = logging.getLogger(__name__)
 
+ENHANCED_FEATURE_DESCRIPTIONS = {
+    "birth_year_similarity": "Similarity between birth years",
+    "death_year_similarity": "Similarity between death years",
+    "active_period_similarity": "Similarity between active periods",
+    "provision_year_overlap": "Overlap between publication years",
+    "date_range_overlap": "Overlap between publication date ranges",
+    "temporal_compatibility": "Overall temporal compatibility score",
+    # Add descriptions for all enhanced features
+}
+
+def get_enhanced_feature_description(name: str) -> str:
+    """Get a descriptive name for an enhanced feature."""
+    return ENHANCED_FEATURE_DESCRIPTIONS.get(name, name)
 
 def extract_life_dates(person_str: str) -> Tuple[Optional[int], Optional[int]]:
     """
@@ -1060,7 +1073,9 @@ def enhance_feature_vector(
     enhanced_features_dict = {**base_features_dict, **interaction_features}
     
     # Convert back to list format
-    enhanced_feature_names = list(enhanced_features_dict.keys())
-    enhanced_feature_values = [enhanced_features_dict[name] for name in enhanced_feature_names]
+    # enhanced_feature_names = list(enhanced_features_dict.keys())
+    # enhanced_feature_values = [enhanced_features_dict[name] for name in enhanced_feature_names]
     
-    return enhanced_feature_values, enhanced_feature_names
+    # return enhanced_feature_values, enhanced_feature_names
+    enhanced_feature_names = [get_enhanced_feature_description(name) for name in all_feature_names]
+    return final_features, enhanced_feature_names
