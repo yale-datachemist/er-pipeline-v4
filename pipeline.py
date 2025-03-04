@@ -13,7 +13,7 @@ import sys
 import time
 from typing import Dict, List, Any, Optional
 
-from analysis import AnalysisReporter, analyze_pipeline_performance
+from analysis import AnalysisReporter, analyze_pipeline_performance, analyze_test_results
 
 from preprocessing import (
     preprocess_catalog_data, get_input_files, 
@@ -180,14 +180,15 @@ class EntityResolutionPipeline:
             # Report results
             from classification import generate_detailed_reports
             # Use the actual feature names from test data
-            test_metrics = generate_detailed_reports(
+            # Call the new function instead of generate_detailed_reports
+            test_metrics = analyze_test_results(
                 X_test,
                 y_test,
                 classifier,
                 test_pairs,
                 record_field_hashes,
                 unique_strings,
-                test_feature_names,  # Use actual feature names, not config
+                self.config.get("feature_names", []),
                 self.config
             )            
 

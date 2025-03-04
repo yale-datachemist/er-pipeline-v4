@@ -1421,7 +1421,291 @@ def analyze_pipeline_performance(
     
     return comprehensive_report
 
-
+def analyze_test_results(
+    X_test: np.ndarray,
+    y_test: np.ndarray,
+    classifier: Any,
+    test_pairs: List[Tuple[str, str, bool]],
+    record_field_hashes: Dict[str, Dict[str, str]],
+    unique_strings: Dict[str, str],
+    feature_names: List[str],
+    config: Dict[str, Any]
+) -> Dict[str, float]:
+    """
+    Complete analysis of test results with detailed reports.
+    
+    Args:
+        X_test: Test feature matrix
+        y_test: Test labels
+        classifier: Trained classifier
+        test_pairs: Original test record pairs
+        record_field_hashes: Record field hashes
+        unique_strings: String lookup dictionary
+        feature_names: Names of features
+        config: Configuration dictionary
+        
+    Returns:
+        Dictionary of evaluation metrics
+    """
+    import csv
+    import os
+    import json
+    import matplotlib.pyplot as plt
+    from sklearn.metrics import precision_score, recall_score, f1_score
+    
+    logger.info("Analyzing test results and generating detailed reports")
+    
+    # Create output directory
+    output_dir = config.get("output_dir", "data/output")
+    reports_dir = os.path.join(output_dir, "reports")
+    os.makedirs(reports_dir, exist_ok=True)
+    figures_dir = os.path.join(reports_dir, "figures")
+    os.makedirs(figures_dir, exist_ok=True)
+    
+    # Ensure feature names match feature dimensions
+    if X_test.shape[1] != len(feature_names):
+        logger.warning(f"Feature dimension mismatch: X_test has {X_test.shape[1]} features but {len(feature_names)} names provided")
+        
+        # Create descriptive feature names if possible, otherwise use generic names
+        try:
+            # Try to extend with base names we know
+            base_names = [
+                'person_sim', 'record_sim', 'title_sim', 'roles_sim', 'attribution_sim', 
+                'provision_sim', 'subjects_sim', 'genres_sim', 'relatedWork_sim',
+                'person_lev_sim', 'has_life_dates', 'temporal_overlap'
+            ]
+            
+            # If we have more features than names, extend with descriptive names if possible
+            if len(feature_names) < X_test.shape[1]:
+                extended_names = feature_names.copy()
+                
+                # These are common feature names in enhanced feature vectors
+                enhanced_names = [
+                    'birth_year_similarity', 'death_year_similarity', 'active_period_similarity',
+                    'provision_year_overlap', 'date_range_overlap', 'temporal_compatibility',
+                    'is_author_consistency', 'is_subject_consistency', 'is_editor_consistency',
+                    'is_translator_consistency', 'is_contributor_consistency',
+                    'person_sim_person_lev_sim_interaction', 'temporal_overlap_person_sim_interaction',
+                    'exact_name_temporal_match', 'person_sim_squared', 'person_title_harmonic'
+                ]
+                
+                # Add common enhanced names if needed
+                for name in enhanced_names:
+                    if len(extended_names) < X_test.shape[1] and name not in extended_names:
+                        extended_names.append(name)
+                
+                # If still not enough, add generic names
+                while len(extended_names) < X_test.shape[1]:
+                    extended_names.append(f"feature_{len(extended_names)}")
+                
+                feature_names = extended_names
+        except Exception as e:
+            logger.error(f"Error creating descriptive feature names: {e}")
+            # Fall back to generic names
+            feature_names = [f"feature_{i}" for i in range(X_test.shape[1])]
+    
+    # Log the feature names being used
+    logger.info(f"Using {len(feature_names)} feature names for analysis")
+    if len(feature_names) > 10:
+        logger.info(f"First 10 feature names: {feature_names[:10]}...")
+    else:
+        logger.info(f"Feature names: {feature_names}")
+    
+    # Generate predictions
+    y_pred_proba = classifier.predict_proba(X_test)
+    y_pred = (y_pred_proba >= 0.5).astype(int)
+    
+    # Calculate metrics
+    try:
+        accuracy = np.mean(y_pred == y_test)
+        precision = precision_score(y_test, y_pred)
+        recall = recall_score(y_test, y_pred)
+        f1 = f1_score(y_test, y_pred)
+        
+        metrics = {
+            "accuracy": float(accuracy),
+            "precision": float(precision),
+            "recall": float(recall),
+            "f1": float(f1),
+            "test_samples": len(y_test),
+            "positive_samples": int(np.sum(y_test)),
+            "predicted_positive": int(np.sum(y_pred)),
+            "true_positives": int(np.sum((y_pred == 1) & (y_test == 1))),
+            "false_positives": int(np.sum((y_pred == 1) & (y_test == 0))),
+            "true_negatives": int(np.sum((y_pred == 0) & (y_test == 0))),
+            "false_negatives": int(np.sum((y_pred == 0) & (y_test == 1)))
+        }
+        
+        logger.info(f"Test set evaluation:")
+        logger.info(f"  Accuracy: {accuracy:.4f}")
+        logger.info(f"  Precision: {precision:.4f}")
+        logger.info(f"  Recall: {recall:.4f}")
+        logger.info(f"  F1 Score: {f1:.4f}")
+    except Exception as e:
+        logger.error(f"Error calculating metrics: {e}")
+        metrics = {"error": str(e)}
+    
+    # 1. Export all test data with predictions and features
+    try:
+        logger.info("Exporting complete test dataset to CSV")
+        csv_path = os.path.join(reports_dir, "test_dataset_complete.csv")
+        
+        with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            headers = [
+                'record_id1', 'record_id2', 
+                'person1', 'person2',
+                'true_label', 'predicted_label', 'predicted_prob', 'is_correct'
+            ]
+            headers.extend(feature_names)
+            writer.writerow(headers)
+            
+            for idx in range(min(len(test_pairs), len(y_test))):
+                id1, id2, _ = test_pairs[idx]
+                
+                # Get person names
+                fields1 = record_field_hashes.get(id1, {})
+                fields2 = record_field_hashes.get(id2, {})
+                person1 = unique_strings.get(fields1.get('person', "NULL"), "")
+                person2 = unique_strings.get(fields2.get('person', "NULL"), "")
+                
+                # Create row
+                row = [
+                    id1, id2,
+                    person1, person2,
+                    int(y_test[idx]), 
+                    int(y_pred[idx]),
+                    float(y_pred_proba[idx]),
+                    int(y_test[idx] == y_pred[idx])
+                ]
+                
+                # Add feature values
+                row.extend(X_test[idx].tolist())
+                writer.writerow(row)
+                
+        logger.info(f"Saved complete test dataset to {csv_path}")
+    except Exception as e:
+        logger.error(f"Error exporting test dataset: {e}")
+    
+    # 2. Export misclassified pairs with detailed information
+    try:
+        logger.info("Generating report of misclassified pairs")
+        misclassified_indices = np.where(y_test != y_pred)[0]
+        
+        if len(misclassified_indices) > 0:
+            csv_path = os.path.join(reports_dir, "misclassified_pairs.csv")
+            
+            with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                headers = [
+                    'record_id1', 'record_id2', 
+                    'person1', 'person2',
+                    'title1', 'title2',
+                    'provision1', 'provision2',
+                    'true_label', 'predicted_label', 'predicted_prob'
+                ]
+                headers.extend(feature_names)
+                writer.writerow(headers)
+                
+                for idx in misclassified_indices:
+                    if idx < len(test_pairs):
+                        id1, id2, _ = test_pairs[idx]
+                        
+                        # Get field values
+                        fields1 = record_field_hashes.get(id1, {})
+                        fields2 = record_field_hashes.get(id2, {})
+                        
+                        person1 = unique_strings.get(fields1.get('person', "NULL"), "")
+                        person2 = unique_strings.get(fields2.get('person', "NULL"), "")
+                        
+                        title1 = unique_strings.get(fields1.get('title', "NULL"), "")
+                        title2 = unique_strings.get(fields2.get('title', "NULL"), "")
+                        
+                        provision1 = unique_strings.get(fields1.get('provision', "NULL"), "")
+                        provision2 = unique_strings.get(fields2.get('provision', "NULL"), "")
+                        
+                        # Create row
+                        row = [
+                            id1, id2,
+                            person1, person2,
+                            title1, title2,
+                            provision1, provision2,
+                            int(y_test[idx]), 
+                            int(y_pred[idx]),
+                            float(y_pred_proba[idx])
+                        ]
+                        
+                        # Add feature values
+                        row.extend(X_test[idx].tolist())
+                        writer.writerow(row)
+                
+            logger.info(f"Saved report of {len(misclassified_indices)} misclassified pairs to {csv_path}")
+        else:
+            logger.info("No misclassified pairs found")
+    except Exception as e:
+        logger.error(f"Error generating misclassified pairs report: {e}")
+    
+    # 3. Feature correlation with errors analysis
+    try:
+        logger.info("Analyzing feature correlations with errors")
+        errors = (y_test != y_pred).astype(int)
+        
+        # Calculate correlation between each feature and errors
+        correlations = []
+        for i in range(X_test.shape[1]):
+            if i < len(feature_names):
+                try:
+                    corr = np.corrcoef(X_test[:, i], errors)[0, 1]
+                    correlations.append((feature_names[i], corr))
+                except:
+                    correlations.append((feature_names[i], 0.0))
+        
+        # Sort by absolute correlation
+        correlations.sort(key=lambda x: abs(x[1]), reverse=True)
+        
+        # Save to CSV
+        csv_path = os.path.join(reports_dir, "feature_error_correlations.csv")
+        
+        with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow(['Feature', 'Correlation with Errors'])
+            
+            for feature, corr in correlations:
+                writer.writerow([feature, corr])
+        
+        logger.info(f"Saved feature error correlation analysis to {csv_path}")
+        
+        # Create visualization
+        plt.figure(figsize=(12, 8))
+        
+        # Plot top 20 features or all if less than 20
+        top_n = min(20, len(correlations))
+        top_features = [x[0] for x in correlations[:top_n]]
+        top_correlations = [x[1] for x in correlations[:top_n]]
+        
+        plt.barh(range(top_n), [abs(c) for c in top_correlations], color=['red' if c > 0 else 'blue' for c in top_correlations])
+        plt.yticks(range(top_n), top_features)
+        plt.xlabel('Absolute Correlation with Prediction Errors')
+        plt.title('Features Most Correlated with Prediction Errors')
+        plt.tight_layout()
+        
+        # Save figure
+        plt.savefig(os.path.join(figures_dir, "feature_error_correlations.png"))
+        plt.close()
+    except Exception as e:
+        logger.error(f"Error analyzing feature correlations: {e}")
+    
+    # Save metrics
+    try:
+        metrics_path = os.path.join(reports_dir, "test_evaluation_metrics.json")
+        with open(metrics_path, 'w', encoding='utf-8') as f:
+            json.dump(metrics, f, indent=2)
+        
+        logger.info(f"Saved test evaluation metrics to {metrics_path}")
+    except Exception as e:
+        logger.error(f"Error saving metrics: {e}")
+    
+    return metrics
 
 
 if __name__ == "__main__":

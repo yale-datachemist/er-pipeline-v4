@@ -303,6 +303,46 @@ def batch_cosine_similarity(vectors1: List[np.ndarray], vectors2: List[np.ndarra
     
     return similarity
 
+def ensure_feature_names(
+    features: np.ndarray,
+    existing_names: List[str] = None,
+    prefix: str = "feature"
+) -> List[str]:
+    """
+    Ensure feature vector has corresponding feature names.
+    
+    Args:
+        features: Feature vector or matrix
+        existing_names: Existing feature names (if any)
+        prefix: Prefix for auto-generated names
+    
+    Returns:
+        List of feature names matching the feature dimension
+    """
+    if features is None:
+        return []
+    
+    # Get feature dimension
+    if len(features.shape) == 1:
+        feature_count = features.shape[0]
+    else:
+        feature_count = features.shape[1]
+    
+    # Use existing names if provided
+    if existing_names:
+        # If we have enough names, use them
+        if len(existing_names) >= feature_count:
+            return existing_names[:feature_count]
+        
+        # Otherwise, extend with generic names
+        extended_names = existing_names.copy()
+        for i in range(len(existing_names), feature_count):
+            extended_names.append(f"{prefix}_{i}")
+        return extended_names
+    
+    # Create generic names if none provided
+    return [f"{prefix}_{i}" for i in range(feature_count)]
+
 if __name__ == "__main__":
     # Simple test to ensure the module loads correctly
     print("Utility module loaded successfully")

@@ -43,6 +43,89 @@ def get_enhanced_feature_description(name: str) -> str:
     """Get a descriptive name for an enhanced feature."""
     return ENHANCED_FEATURE_DESCRIPTIONS.get(name, name)
 
+def get_descriptive_feature_names(enhanced_features: List[float], base_names: List[str]) -> List[str]:
+    """
+    Generate descriptive names for enhanced features.
+    
+    Args:
+        enhanced_features: Enhanced feature vector
+        base_names: Base feature names before enhancement
+        
+    Returns:
+        List of descriptive feature names
+    """
+    # Descriptive names for common enhanced features
+    name_map = {
+        # Vector similarities
+        "person_sim": "Person Name Vector Similarity",
+        "record_sim": "Record Vector Similarity",
+        "title_sim": "Title Vector Similarity",
+        "roles_sim": "Roles Vector Similarity",
+        "attribution_sim": "Attribution Vector Similarity",
+        "provision_sim": "Provision Vector Similarity",
+        "subjects_sim": "Subjects Vector Similarity",
+        "genres_sim": "Genres Vector Similarity",
+        "relatedWork_sim": "Related Work Vector Similarity",
+        
+        # Name features
+        "person_lev_sim": "Person Name Levenshtein Similarity",
+        "has_life_dates": "Has Life Dates",
+        "life_dates_match_score": "Life Dates Match Score",
+        
+        # Temporal features
+        "temporal_overlap": "Temporal Overlap",
+        "birth_year_similarity": "Birth Year Similarity",
+        "death_year_similarity": "Death Year Similarity",
+        "active_period_similarity": "Active Period Similarity",
+        "provision_year_overlap": "Publication Year Overlap",
+        "date_range_overlap": "Date Range Overlap",
+        "publication_during_lifetime_similarity": "Publication During Lifetime Similarity",
+        "posthumous_publication_similarity": "Posthumous Publication Similarity",
+        "historical_republication_similarity": "Historical Republication Similarity",
+        "temporal_plausibility_similarity": "Temporal Plausibility Similarity",
+        "temporal_compatibility": "Temporal Compatibility Score",
+        
+        # Role features
+        "is_author_consistency": "Author Role Consistency",
+        "is_subject_consistency": "Subject Role Consistency",
+        "is_editor_consistency": "Editor Role Consistency",
+        "is_translator_consistency": "Translator Role Consistency",
+        "is_contributor_consistency": "Contributor Role Consistency",
+        
+        # Historical pattern features
+        "historical_figure_pattern1": "Historical Figure Pattern (Person 1)",
+        "historical_figure_pattern2": "Historical Figure Pattern (Person 2)",
+        "historical_pattern_match": "Historical Pattern Match Score",
+        
+        # Confidence features
+        "life_dates_confidence": "Life Dates Confidence",
+        "provision_dates_confidence": "Provision Dates Confidence",
+        
+        # Asymmetry features
+        "has_asymmetric_life_dates": "Has Asymmetric Life Dates",
+        "asymmetry_compatibility": "Asymmetry Compatibility Score",
+        
+        # Interaction features
+        "person_sim_person_lev_sim_interaction": "Person Vector x Levenshtein Interaction",
+        "temporal_overlap_person_sim_interaction": "Temporal Overlap x Person Sim Interaction", 
+        "exact_name_temporal_match": "Exact Name + Temporal Match",
+        "person_sim_squared": "Person Similarity Squared",
+        "person_title_harmonic": "Person-Title Harmonic Mean"
+    }
+    
+    # Create descriptive names for all features
+    descriptive_names = []
+    for i, base_name in enumerate(base_names):
+        if i < len(enhanced_features):
+            # Use mapped name if available
+            descriptive_names.append(name_map.get(base_name, base_name))
+    
+    # Add generic names for any additional features
+    for i in range(len(descriptive_names), len(enhanced_features)):
+        descriptive_names.append(f"Enhanced Feature {i}")
+    
+    return descriptive_names
+
 def extract_life_dates(person_str: str) -> Tuple[Optional[int], Optional[int]]:
     """
     Extract birth and death years from a person name string.
@@ -1073,9 +1156,9 @@ def enhance_feature_vector(
     enhanced_features_dict = {**base_features_dict, **interaction_features}
     
     # Convert back to list format
-    # enhanced_feature_names = list(enhanced_features_dict.keys())
-    # enhanced_feature_values = [enhanced_features_dict[name] for name in enhanced_feature_names]
+    enhanced_feature_names = list(enhanced_features_dict.keys())
+    enhanced_feature_values = [enhanced_features_dict[name] for name in enhanced_feature_names]
     
     # return enhanced_feature_values, enhanced_feature_names
-    enhanced_feature_names = [get_enhanced_feature_description(name) for name in all_feature_names]
-    return final_features, enhanced_feature_names
+    #enhanced_feature_names = [get_enhanced_feature_description(name) for name in all_feature_names]
+    #return final_features, enhanced_feature_names
