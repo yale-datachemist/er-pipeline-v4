@@ -339,75 +339,72 @@ class AnalysisReporter:
         """
         logger.info("Analyzing feature engineering results")
         
-        if feature_names is None:
-            feature_names = [
-                'record_sim', 'person_sim', 'roles_sim', 'title_sim', 'attribution_sim',
-                'provision_sim', 'subjects_sim', 'genres_sim', 'relatedWork_sim',
-                'person_lev_sim', 'has_life_dates', 'temporal_overlap'
-            ]
-            
-            # Adjust if dimensions don't match
-            if len(feature_names) != X.shape[1]:
+        try:
+            if feature_names is None:
                 feature_names = [f"feature_{i}" for i in range(X.shape[1])]
-        
-        # Basic statistics
-        num_samples, num_features = X.shape
-        num_positive = np.sum(y)
-        num_negative = num_samples - num_positive
-        class_balance = num_positive / num_samples
-        
-        # Feature statistics
-        feature_stats = {}
-        for i, name in enumerate(feature_names):
-            feature_stats[name] = {
-                "min": float(np.min(X[:, i])),
-                "max": float(np.max(X[:, i])),
-                "mean": float(np.mean(X[:, i])),
-                "std": float(np.std(X[:, i])),
-                "median": float(np.median(X[:, i]))
+                
+            # Basic statistics
+            num_samples, num_features = X.shape
+            num_positive = np.sum(y)
+            num_negative = num_samples - num_positive
+            class_balance = num_positive / num_samples
+            
+            # Calculate basic stats safely
+            feature_stats = {}
+            for i, name in enumerate(feature_names):
+                try:
+                    col = X[:, i]
+                    feature_stats[name] = {
+                        "min": float(np.nanmin(col)),
+                        "max": float(np.nanmax(col)),
+                        "mean": float(np.nanmean(col)),
+                        "std": float(np.nanstd(col)),
+                        "median": float(np.nanmedian(col)),
+                        "has_nan": bool(np.isnan(col).any()),
+                        "has_inf": bool(np.isinf(col).any())
+                    }
+                except Exception as e:
+                    logger.warning(f"Error calculating stats for feature {name}: {e}")
+                    feature_stats[name] = {"error": str(e)}
+            
+            # Create visualizations with extra error handling
+            try:
+                self._create_feature_importance_chart(feature_stats)
+            except Exception as e:
+                logger.error(f"Error creating feature importance chart: {e}")
+            
+            try:
+                # Use a sample of data for visualization if dataset is large
+                if X.shape[0] > 10000:
+                    sample_size = 10000
+                    indices = np.random.choice(X.shape[0], sample_size, replace=False)
+                    X_sample = X[indices]
+                    y_sample = y[indices]
+                    self._create_feature_distribution_chart(X_sample, y_sample, feature_names)
+                else:
+                    self._create_feature_distribution_chart(X, y, feature_names)
+            except Exception as e:
+                logger.error(f"Error creating feature distribution chart: {e}")
+            
+            # Compile results
+            results = {
+                "sample_statistics": {
+                    "num_samples": int(num_samples),
+                    "num_features": int(num_features),
+                    "num_positive": int(num_positive),
+                    "num_negative": int(num_negative),
+                    "class_balance": float(class_balance)
+                },
+                "feature_statistics": feature_stats
             }
-        
-        # Feature correlation
-        correlation_matrix = np.corrcoef(X.T)
-        
-        # Feature distributions by class
-        class_distributions = {}
-        for i, name in enumerate(feature_names):
-            class_distributions[name] = {
-                "positive": float(np.mean(X[y == 1, i])),
-                "negative": float(np.mean(X[y == 0, i])),
-                "difference": float(np.mean(X[y == 1, i]) - np.mean(X[y == 0, i]))
-            }
-        
-        # Feature importance (simple difference between class means)
-        feature_importance = {
-            name: abs(class_distributions[name]["difference"])
-            for name in feature_names
-        }
-        
-        # Create visualizations
-        self._create_feature_importance_chart(feature_importance)
-        self._create_feature_correlation_heatmap(correlation_matrix, feature_names)
-        self._create_feature_distribution_chart(X, y, feature_names)
-        
-        # Compile results
-        results = {
-            "sample_statistics": {
-                "num_samples": int(num_samples),
-                "num_features": int(num_features),
-                "num_positive": int(num_positive),
-                "num_negative": int(num_negative),
-                "class_balance": float(class_balance)
-            },
-            "feature_statistics": feature_stats,
-            "class_distributions": class_distributions,
-            "feature_importance": feature_importance
-        }
-        
-        # Save report
-        self._save_report("feature_analysis.json", results)
-        
-        return results
+            
+            # Save report
+            self._save_report("feature_analysis.json", results)
+            
+            return results
+        except Exception as e:
+            logger.error(f"Error in feature analysis: {e}")
+            return {"error": str(e)}
     
     def analyze_classification(
         self,
@@ -833,31 +830,49 @@ class AnalysisReporter:
         Args:
             feature_importance: Feature importance scores
         """
-        # Prepare data
-        sorted_features = sorted(
-            feature_importance.items(),
-            key=lambda x: x[1],
-            reverse=True
-        )
-        
-        features = [item[0] for item in sorted_features]
-        importance = [item[1] for item in sorted_features]
-        
-        # Create figure
-        plt.figure(figsize=(12, 6))
-        
-        # Create bar chart
-        plt.bar(features, importance)
-        
-        plt.xlabel('Feature')
-        plt.ylabel('Importance')
-        plt.title('Feature Importance')
-        plt.xticks(rotation=45, ha='right')
-        plt.tight_layout()
-        
-        # Save figure
-        plt.savefig(os.path.join(self.figures_dir, "feature_importance.png"))
-        plt.close()
+        try:
+            # Prepare data - make sure we're sorting by value, not by dict
+            if isinstance(next(iter(feature_importance.values()), None), dict):
+                # Handle case where values are dictionaries
+                sorted_features = sorted(
+                    [(name, values.get("mean", 0)) for name, values in feature_importance.items()],
+                    key=lambda x: abs(x[1]),
+                    reverse=True
+                )
+            else:
+                # Handle case where values are directly comparable
+                sorted_features = sorted(
+                    feature_importance.items(),
+                    key=lambda x: abs(x[1]),
+                    reverse=True
+                )
+            
+            features = [item[0] for item in sorted_features]
+            importance = [item[1] for item in sorted_features]
+            
+            # Create figure
+            plt.figure(figsize=(12, 6))
+            
+            # Create bar chart
+            plt.bar(features, importance)
+            
+            plt.xlabel('Feature')
+            plt.ylabel('Importance')
+            plt.title('Feature Importance')
+            plt.xticks(rotation=45, ha='right')
+            plt.tight_layout()
+            
+            # Save figure
+            plt.savefig(os.path.join(self.figures_dir, "feature_importance.png"))
+            plt.close()
+        except Exception as e:
+            logger.error(f"Error creating feature importance chart: {e}")
+            # Create simple error message figure
+            plt.figure(figsize=(10, 6))
+            plt.text(0.5, 0.5, f"Error creating feature importance chart:\n{str(e)}", 
+                    ha='center', va='center', fontsize=12)
+            plt.savefig(os.path.join(self.figures_dir, "feature_importance_error.png"))
+            plt.close()
     
     def _create_feature_correlation_heatmap(
         self,
@@ -908,46 +923,92 @@ class AnalysisReporter:
             feature_names: Feature names
             max_features: Maximum number of features to display
         """
-        # Limit the number of features to display
-        if len(feature_names) > max_features:
-            # Select the most important features
-            feature_means = np.array([
-                abs(np.mean(X[y == 1, i]) - np.mean(X[y == 0, i]))
-                for i in range(len(feature_names))
-            ])
+        try:
+            # Safety check for NaN or inf values
+            if np.isnan(X).any() or np.isinf(X).any():
+                logger.warning("Feature matrix contains NaN or infinite values. Cleaning data for visualization.")
+                X = np.nan_to_num(X, nan=0.0, posinf=1.0, neginf=0.0)
+                
+            # Limit size of data to avoid memory issues
+            max_samples = 10000
+            if X.shape[0] > max_samples:
+                logger.info(f"Sampling {max_samples} rows for visualization (from {X.shape[0]} total)")
+                indices = np.random.choice(X.shape[0], max_samples, replace=False)
+                X_sample = X[indices]
+                y_sample = y[indices]
+            else:
+                X_sample = X
+                y_sample = y
             
-            # Get indices of top features
-            top_indices = np.argsort(feature_means)[-max_features:]
-            selected_features = [feature_names[i] for i in top_indices]
-            selected_indices = top_indices
-        else:
-            selected_features = feature_names
-            selected_indices = list(range(len(feature_names)))
-        
-        # Create figure
-        fig, axes = plt.subplots(nrows=len(selected_features), figsize=(10, 3*len(selected_features)))
-        
-        if len(selected_features) == 1:
-            axes = [axes]
-        
-        # Create distribution plots
-        for i, (feature_idx, ax) in enumerate(zip(selected_indices, axes)):
-            feature_values_pos = X[y == 1, feature_idx]
-            feature_values_neg = X[y == 0, feature_idx]
+            # Limit the number of features to display
+            if len(feature_names) > max_features:
+                # Select most important features based on class separation
+                feature_importance = []
+                for i in range(X_sample.shape[1]):
+                    if i < len(feature_names):  # Ensure we don't go out of bounds
+                        try:
+                            pos_mean = np.mean(X_sample[y_sample == 1, i])
+                            neg_mean = np.mean(X_sample[y_sample == 0, i])
+                            importance = abs(pos_mean - neg_mean)
+                            feature_importance.append((i, importance))
+                        except:
+                            feature_importance.append((i, 0.0))
+                            
+                # Sort by importance
+                top_indices = [idx for idx, _ in sorted(feature_importance, key=lambda x: x[1], reverse=True)[:max_features]]
+                selected_features = [feature_names[i] if i < len(feature_names) else f"feature_{i}" for i in top_indices]
+                selected_indices = top_indices
+            else:
+                selected_features = feature_names
+                selected_indices = list(range(min(len(feature_names), X_sample.shape[1])))
             
-            sns.histplot(feature_values_pos, ax=ax, color='blue', alpha=0.5, label='Match')
-            sns.histplot(feature_values_neg, ax=ax, color='red', alpha=0.5, label='Non-match')
+            # Create figure
+            fig, axes = plt.subplots(nrows=len(selected_indices), figsize=(10, 3*len(selected_indices)))
             
-            ax.set_title(f'Distribution of {selected_features[i]}')
-            ax.set_xlabel('Value')
-            ax.set_ylabel('Count')
-            ax.legend()
-        
-        plt.tight_layout()
-        
-        # Save figure
-        plt.savefig(os.path.join(self.figures_dir, "feature_distributions.png"))
-        plt.close()
+            if len(selected_indices) == 1:
+                axes = [axes]
+            
+            # Create distribution plots
+            for i, (feature_idx, ax) in enumerate(zip(selected_indices, axes)):
+                try:
+                    if feature_idx < X_sample.shape[1]:  # Safety check
+                        feature_values_pos = X_sample[y_sample == 1, feature_idx]
+                        feature_values_neg = X_sample[y_sample == 0, feature_idx]
+                        
+                        # Use histogram with fixed number of bins to avoid memory issues
+                        ax.hist(feature_values_pos, bins=20, alpha=0.5, label='Match', color='blue')
+                        ax.hist(feature_values_neg, bins=20, alpha=0.5, label='Non-match', color='red')
+                        
+                        # Avoid seaborn histplot which can cause memory issues
+                        # sns.histplot(feature_values_pos, ax=ax, color='blue', alpha=0.5, label='Match', bins=20)
+                        # sns.histplot(feature_values_neg, ax=ax, color='red', alpha=0.5, label='Non-match', bins=20)
+                        
+                        if i < len(selected_features):
+                            ax.set_title(f'Distribution of {selected_features[i]}')
+                        else:
+                            ax.set_title(f'Distribution of Feature {feature_idx}')
+                        
+                        ax.set_xlabel('Value')
+                        ax.set_ylabel('Count')
+                        ax.legend()
+                except Exception as e:
+                    logger.error(f"Error plotting feature {i}: {e}")
+                    ax.text(0.5, 0.5, f"Error plotting this feature: {str(e)[:50]}...", 
+                        ha='center', va='center', transform=ax.transAxes)
+            
+            plt.tight_layout()
+            
+            # Save figure
+            plt.savefig(os.path.join(self.figures_dir, "feature_distributions.png"))
+            plt.close()
+        except Exception as e:
+            logger.error(f"Error creating feature distribution chart: {e}")
+            # Create simple error message figure
+            plt.figure(figsize=(10, 6))
+            plt.text(0.5, 0.5, f"Error creating feature distributions:\n{str(e)}", 
+                    ha='center', va='center', fontsize=12)
+            plt.savefig(os.path.join(self.figures_dir, "feature_distributions_error.png"))
+            plt.close()
     
     def _create_confusion_matrix_plot(self, cm: np.ndarray) -> None:
         """

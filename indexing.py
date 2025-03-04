@@ -209,18 +209,6 @@ def vector_search(
     field_type: str,
     limit: int = 10
 ) -> List[Dict[str, Any]]:
-    """
-    Perform vector search in Weaviate.
-    
-    Args:
-        client: Weaviate client
-        query_vector: Query vector
-        field_type: Field type to search
-        limit: Maximum number of results
-    
-    Returns:
-        List of search results
-    """
     collection = client.collections.get("UniqueStringsByField")
     
     try:
@@ -228,8 +216,9 @@ def vector_search(
             near_vector=query_vector,
             limit=limit,
             return_metadata=MetadataQuery(distance=True),
-            include_vector=True,
-            filters=Filter.by_property("field_type").equal(field_type)
+            include_vector=[field_type],  # Specify which vector to include
+            filters=Filter.by_property("field_type").equal(field_type),
+            target_vector=field_type  # Add this line to specify target vector
         )
         
         return [
@@ -252,18 +241,6 @@ def impute_null_field(
     client: weaviate.Client,
     k: int = 10
 ) -> Optional[List[float]]:
-    """
-    Impute missing field values using vector-based hot deck approach.
-    
-    Args:
-        record_hash: Hash of the record field
-        field_to_impute: Field to impute
-        client: Weaviate client
-        k: Number of nearest neighbors to consider
-        
-    Returns:
-        Imputed vector or None if imputation fails
-    """
     # Skip if record hash is NULL
     if record_hash == "NULL":
         logger.debug(f"Skipping imputation for NULL record hash")
@@ -283,7 +260,7 @@ def impute_null_field(
         result = collection.query.fetch_objects(
             filters=combined_filter,
             limit=1,
-            include_vector=True
+            include_vector=["record"]  # Specify vector name here
         )
         
         if not result.objects:
@@ -301,8 +278,9 @@ def impute_null_field(
             near_vector=record_vector,
             limit=k,
             return_metadata=MetadataQuery(distance=True),
-            include_vector=True,
-            filters=Filter.by_property("field_type").equal(field_to_impute)
+            include_vector=[field_to_impute],  # Specify which vector to include
+            filters=Filter.by_property("field_type").equal(field_to_impute),
+            target_vector=field_to_impute  # Add this line to specify target vector
         )
         
         # Extract vectors from results
@@ -310,7 +288,7 @@ def impute_null_field(
         for obj in results.objects:
             vector = obj.vector.get(field_to_impute)
             if vector:
-                vectors.append(vector)
+                vectors.append(vector)                
         
         # Compute weighted average vector based on distance
         if vectors:

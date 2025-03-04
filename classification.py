@@ -8,7 +8,10 @@ Handles feature engineering, classifier training, and entity clustering.
 import logging
 import re
 from typing import Dict, List, Any, Tuple, Optional, Set
-
+import time
+import os
+from concurrent.futures import ThreadPoolExecutor
+from collections import defaultdict
 import Levenshtein
 import networkx as nx
 import numpy as np
@@ -154,6 +157,234 @@ class LogisticRegressionClassifier:
         """
         return (self.predict_proba(X) >= threshold).astype(int)
 
+def bulk_impute_fields(
+    record_field_hashes: Dict[str, Dict[str, str]],
+    weaviate_client: Any,
+    config: Dict[str, Any]
+) -> Dict[Tuple[str, str], List[float]]:
+    """
+    Pre-impute fields in bulk to avoid repeated queries.
+    
+    Args:
+        record_field_hashes: Record field hashes
+        weaviate_client: Weaviate client
+        config: Configuration
+        
+    Returns:
+        Dictionary mapping (record_hash, field) to imputed vector
+    """
+
+    # Skip bulk imputation if configured
+    if config.get("skip_bulk_imputation", False):
+        logger.info("Skipping bulk imputation (disabled in config)")
+        return {}
+    
+    logger.info("Pre-imputing nullable fields...")
+    
+    from collections import defaultdict
+    
+    # Count field/hash combinations to find most common
+    field_hash_counts = defaultdict(int)
+    for fields in record_field_hashes.values():
+        record_hash = fields.get('record', "NULL")
+        if record_hash != "NULL":
+            for field in ['attribution', 'provision', 'subjects', 'genres', 'relatedWork']:
+                if fields.get(field) == "NULL":
+                    field_hash_counts[(record_hash, field)] += 1
+    
+    # Get most common combinations
+    common_combinations = sorted(
+        field_hash_counts.items(), 
+        key=lambda x: x[1], 
+        reverse=True
+    )[:1000]  # Limit to 1000 most common
+    
+    # Pre-impute these combinations
+    imputation_cache = {}
+    logger.info(f"Pre-imputing {len(common_combinations)} common field/hash combinations")
+    
+    for (record_hash, field), _ in tqdm(common_combinations):
+        vector = impute_null_field(record_hash, field, weaviate_client)
+        if vector is not None:
+            imputation_cache[(record_hash, field)] = vector
+    
+    logger.info(f"Completed pre-imputation of {len(imputation_cache)} combinations")
+    return imputation_cache
+
+def process_record_pair(
+    pair_data: Tuple[str, str, bool],
+    record_field_hashes: Dict[str, Dict[str, str]],
+    unique_strings: Dict[str, str],
+    embeddings: Dict[str, List[float]],
+    imputation_cache: Dict[Tuple[str, str], List[float]],
+    weaviate_client: Any,
+    config: Dict[str, Any],
+    fields: List[str],
+    nullable_fields: List[str],
+    feature_names: List[str],
+    use_enhanced_features: bool = False
+) -> Optional[Tuple[List[float], int, List[str]]]:
+    """
+    Process a single record pair to generate features.
+    
+    Args:
+        pair_data: Tuple of (id1, id2, label)
+        record_field_hashes: Dictionary of record ID → {field → hash}
+        unique_strings: Dictionary of hash → string value
+        embeddings: Dictionary of hash → embedding vector
+        imputation_cache: Cache for imputed values
+        weaviate_client: Weaviate client
+        config: Configuration dictionary
+        fields: Fields to process
+        nullable_fields: Fields that can be null
+        feature_names: Names of features
+        use_enhanced_features: Whether to use enhanced features
+        
+    Returns:
+        Tuple of (feature_vector, label, enhanced_feature_names) or None if skipped
+    """
+    id1, id2, label = pair_data
+    
+    # Skip if either record is missing
+    if id1 not in record_field_hashes or id2 not in record_field_hashes:
+        return None
+    
+    # Get field hashes for both records
+    fields1 = record_field_hashes.get(id1, {})
+    fields2 = record_field_hashes.get(id2, {})
+    
+    # Initialize feature vector
+    features = []
+    
+    # Process each field for similarity features
+    field_vectors1 = []
+    field_vectors2 = []
+    field_indices = []
+    
+    local_imputation_cache = {}  # Thread-local cache
+    
+    # First collect all vectors
+    for i, field in enumerate(fields):
+        hash1 = fields1.get(field, "NULL")
+        hash2 = fields2.get(field, "NULL")
+        
+        vector1 = None
+        vector2 = None
+        
+        # Handle normal case
+        if hash1 != "NULL":
+            vector1 = embeddings.get(hash1)
+        
+        if hash2 != "NULL":
+            vector2 = embeddings.get(hash2)
+        
+        # Handle imputation for nullable fields
+        if hash1 == "NULL" and field in nullable_fields:
+            # Check cache first
+            record_hash = fields1.get('record', "NULL")
+            cache_key = (record_hash, field)
+            
+            if cache_key in imputation_cache:
+                vector1 = imputation_cache[cache_key]
+            elif cache_key in local_imputation_cache:
+                vector1 = local_imputation_cache[cache_key]
+            else:
+                vector1 = impute_null_field(record_hash, field, weaviate_client)
+                if vector1 is not None:
+                    local_imputation_cache[cache_key] = vector1
+        
+        if hash2 == "NULL" and field in nullable_fields:
+            # Check cache first
+            record_hash = fields2.get('record', "NULL")
+            cache_key = (record_hash, field)
+            
+            if cache_key in imputation_cache:
+                vector2 = imputation_cache[cache_key]
+            elif cache_key in local_imputation_cache:
+                vector2 = local_imputation_cache[cache_key]
+            else:
+                vector2 = impute_null_field(record_hash, field, weaviate_client)
+                if vector2 is not None:
+                    local_imputation_cache[cache_key] = vector2
+        
+        # If both vectors available, add to batch
+        if vector1 is not None and vector2 is not None:
+            field_vectors1.append(vector1)
+            field_vectors2.append(vector2)
+            field_indices.append(i)
+        
+        # Initialize with zeros
+        features.append(0.0)
+    
+    # Batch compute similarities
+    if field_vectors1:
+        # Import here in case added to utils.py
+        from utils import batch_cosine_similarity
+        similarities = batch_cosine_similarity(field_vectors1, field_vectors2)
+        
+        # Update feature vector with computed similarities
+        for i, sim_idx in enumerate(field_indices):
+            features[sim_idx] = similarities[i]
+    
+    # Add special features for person names
+    person_str1 = unique_strings.get(fields1.get('person', "NULL"), "")
+    person_str2 = unique_strings.get(fields2.get('person', "NULL"), "")
+    
+    # Levenshtein distance (normalized)
+    if person_str1 and person_str2:
+        lev_distance = Levenshtein.distance(person_str1, person_str2)
+        max_len = max(len(person_str1), len(person_str2))
+        norm_lev = 1.0 - (lev_distance / max_len if max_len > 0 else 0.0)
+        features.append(norm_lev)
+    else:
+        features.append(0.0)
+    
+    # Check for exact match with life dates (strong signal)
+    has_life_dates1 = bool(re.search(r'\d{4}-\d{4}', person_str1))
+    has_life_dates2 = bool(re.search(r'\d{4}-\d{4}', person_str2))
+    exact_match_with_dates = person_str1 == person_str2 and (has_life_dates1 or has_life_dates2)
+    features.append(1.0 if exact_match_with_dates else 0.0)
+    
+    # Add basic temporal overlap feature
+    prov_str1 = unique_strings.get(fields1.get('provision', "NULL"), "")
+    prov_str2 = unique_strings.get(fields2.get('provision', "NULL"), "")
+    
+    # Basic year extraction
+    years1 = extract_years(prov_str1)
+    years2 = extract_years(prov_str2)
+    
+    # Add temporal overlap indicator
+    if years1 and years2:
+        has_overlap = any(y1 in years2 for y1 in years1)
+        features.append(1.0 if has_overlap else 0.0)
+    else:
+        features.append(0.5)  # Neutral when years can't be determined
+        
+    # Current feature names (without enhancement)
+    current_feature_names = feature_names.copy()
+        
+    # Enhance features if enabled
+    if use_enhanced_features:
+        try:
+            enhanced_features, enhanced_names = enhance_feature_vector(
+                features, 
+                current_feature_names,
+                unique_strings, 
+                record_field_hashes, 
+                id1, 
+                id2
+            )
+            features = enhanced_features
+            current_feature_names = enhanced_names
+        except Exception as e:
+            # Log error but continue with basic features
+            logger.warning(f"Error enhancing features: {e}")
+    
+    # Normalize feature vector if required
+    if config.get("feature_normalization", True):
+        features = normalize_features(features)
+    
+    return features, 1 if label else 0, current_feature_names
 
 def engineer_features(
     record_pairs: List[Tuple[str, str, bool]],
@@ -164,184 +395,132 @@ def engineer_features(
     config: Dict[str, Any]
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Generate feature vectors for record pairs.
-    
-    Args:
-        record_pairs: List of (id1, id2, label) tuples
-        record_field_hashes: Dictionary of record ID → {field → hash}
-        unique_strings: Dictionary of hash → string value
-        embeddings: Dictionary of hash → embedding vector
-        weaviate_client: Weaviate client
-        config: Configuration dictionary
-        
-    Returns:
-        Tuple of (X, y) feature matrix and labels
+    Generate feature vectors for record pairs using parallel processing.
     """
+    # Start overall timing
+    total_start_time = time.time()
+    logger.info("====== STARTING FEATURE ENGINEERING ======")
+    
     # Update config if integration module is available
     if INTEGRATION_AVAILABLE:
         config = update_config_for_enhanced_dates(config)
     
-    X, y = [], []
-    feature_names = []
+    # Initialize profiling dictionaries
+    timings = defaultdict(float)
+    counts = defaultdict(int)
     
     # Fields to process
     fields = ['person', 'record', 'title', 'roles', 'attribution', 
               'provision', 'subjects', 'genres', 'relatedWork']
     
     # Nullable fields
-    nullable_fields = ['attribution', 'provision', 'subjects', 'genres', 'relatedWork']
+    nullable_fields = config.get("nullable_fields_to_use", 
+                                ['attribution', 'provision', 'subjects', 'genres', 'relatedWork'])
     
     # Use enhanced features if enabled
     use_enhanced_features = config.get("use_enhanced_features", True)
     
-    for id1, id2, label in tqdm(record_pairs, desc="Engineering features"):
-        # Skip if either record is missing
-        if id1 not in record_field_hashes or id2 not in record_field_hashes:
-            logger.warning(f"Skipping pair with missing record: {id1}, {id2}")
-            continue
-        
-        # Get field hashes for both records
-        fields1 = record_field_hashes.get(id1, {})
-        fields2 = record_field_hashes.get(id2, {})
-        
-        # Initialize feature vector
-        features = []
-        
-        # Process each field for similarity features
-        for field in fields:
-            hash1 = fields1.get(field, "NULL")
-            hash2 = fields2.get(field, "NULL")
-            
-            # Get vectors for both fields
-            vector1 = None
-            vector2 = None
-            
-            # Handle normal case
-            if hash1 != "NULL":
-                vector1 = embeddings.get(hash1)
-            
-            if hash2 != "NULL":
-                vector2 = embeddings.get(hash2)
-            
-            # Handle imputation for nullable fields
-            if hash1 == "NULL" and field in nullable_fields:
-                record_hash = fields1.get('record', "NULL")
-                vector1 = impute_null_field(record_hash, field, weaviate_client)
-                
-            if hash2 == "NULL" and field in nullable_fields:
-                record_hash = fields2.get('record', "NULL")
-                vector2 = impute_null_field(record_hash, field, weaviate_client)
-            
-            # Compute cosine similarity if both vectors are available
-            if vector1 is not None and vector2 is not None:
-                similarity = cosine_similarity(vector1, vector2)
-            else:
-                similarity = 0.0
-                
-            features.append(similarity)
-        
-        # Add special features for person names
-        person_str1 = unique_strings.get(fields1.get('person', "NULL"), "")
-        person_str2 = unique_strings.get(fields2.get('person', "NULL"), "")
-        
-        # Levenshtein distance (normalized)
-        if person_str1 and person_str2:
-            lev_distance = Levenshtein.distance(person_str1, person_str2)
-            max_len = max(len(person_str1), len(person_str2))
-            norm_lev = 1.0 - (lev_distance / max_len if max_len > 0 else 0.0)
-            features.append(norm_lev)
-        else:
-            features.append(0.0)
-        
-        # Check for exact match with life dates (strong signal)
-        use_enhanced_dates = config.get("use_enhanced_date_processing", False) and INTEGRATION_AVAILABLE
-        
-        if use_enhanced_dates:
-            # Use enhanced date extraction
-            birth_year1, death_year1, conf1 = get_life_dates(person_str1, True)
-            birth_year2, death_year2, conf2 = get_life_dates(person_str2, True)
-            
-            # Enhanced life dates match
-            has_life_dates1 = birth_year1 is not None or death_year1 is not None
-            has_life_dates2 = birth_year2 is not None or death_year2 is not None
-            
-            # Calculate enhanced match score with confidence
-            if (birth_year1 == birth_year2 and birth_year1 is not None and 
-                death_year1 == death_year2 and death_year1 is not None):
-                life_dates_match = 1.0 * ((conf1 + conf2) / 2)  # Weight by confidence
-            else:
-                life_dates_match = 0.0
-            
-            features.append(1.0 if has_life_dates1 or has_life_dates2 else 0.0)
-            features.append(life_dates_match)
-        else:
-            # Basic extraction (backward compatible)
-            has_life_dates1 = bool(re.search(r'\d{4}-\d{4}', person_str1))
-            has_life_dates2 = bool(re.search(r'\d{4}-\d{4}', person_str2))
-            exact_match_with_dates = person_str1 == person_str2 and (has_life_dates1 or has_life_dates2)
-            features.append(1.0 if exact_match_with_dates else 0.0)
-        
-        # Add basic temporal overlap feature (will be enhanced if enabled)
-        prov_str1 = unique_strings.get(fields1.get('provision', "NULL"), "")
-        prov_str2 = unique_strings.get(fields2.get('provision', "NULL"), "")
-        
-        if use_enhanced_dates:
-            # Use enhanced year extraction
-            years1 = extract_years_from_text(prov_str1, True)
-            years2 = extract_years_from_text(prov_str2, True)
-        else:
-            # Basic year extraction
-            years1 = extract_years(prov_str1)
-            years2 = extract_years(prov_str2)
-        
-        # Add temporal overlap indicator
-        if years1 and years2:
-            has_overlap = any(y1 in years2 for y1 in years1)
-            features.append(1.0 if has_overlap else 0.0)
-        else:
-            features.append(0.5)  # Neutral when years can't be determined
-        
-        # Create feature names if this is the first pair
-        if not feature_names:
-            base_names = [f"{field}_sim" for field in fields]
-            
-            if use_enhanced_dates:
-                base_names.extend([
-                    'person_lev_sim', 
-                    'has_life_dates',
-                    'life_dates_match_score',
-                    'temporal_overlap'
-                ])
-            else:
-                base_names.extend(['person_lev_sim', 'has_life_dates', 'temporal_overlap'])
-                
-            feature_names = base_names
-        
-        # Enhance features if enabled
-        if use_enhanced_features:
-            enhanced_features, enhanced_names = enhance_feature_vector(
-                features, feature_names, unique_strings, record_field_hashes, id1, id2
-            )
-            # Update feature vector and names
-            features = enhanced_features
-            
-            # Update feature names only on first pair
-            if len(X) == 0:
-                feature_names = enhanced_names
-        
-        # Normalize feature vector
-        if config.get("feature_normalization", True):
-            features = normalize_features(features)
-        
-        X.append(features)
-        y.append(1 if label else 0)
+    # Pre-impute common null fields
+    logger.info("Performing bulk imputation for common fields...")
+    imputation_start = time.time()
+    imputation_cache = bulk_impute_fields(record_field_hashes, weaviate_client, config)
+    timings['bulk_imputation'] = time.time() - imputation_start
+    logger.info(f"Bulk imputation complete with {len(imputation_cache)} cached vectors in {timings['bulk_imputation']:.2f}s")
     
-    # Log feature names
-    logger.info(f"Engineered features: {feature_names}")
+    # Create base feature names
+    base_names = [f"{field}_sim" for field in fields]
+    base_names.extend(['person_lev_sim', 'has_life_dates', 'temporal_overlap'])
+    feature_names = base_names
+    
+    # Maximum number of threads
+    max_workers = config.get("parallel_workers", min(8, os.cpu_count() or 4))
+    logger.info(f"Processing {len(record_pairs)} record pairs using {max_workers} parallel workers")
+    
+    # Create a thread-local Weaviate client for each worker
+    # This avoids connection closed errors when multiple threads use the same client
+    def get_worker_client():
+        return connect_to_weaviate(config)
+    
+    # Process in parallel
+    processed_pairs = []
+    skipped_count = 0
+    
+    # Use ThreadPoolExecutor for parallel processing
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = []
+        
+        # Submit all tasks
+        for pair in record_pairs:
+            future = executor.submit(
+                process_record_pair,
+                pair,
+                record_field_hashes,
+                unique_strings,
+                embeddings,
+                imputation_cache,
+                weaviate_client,
+                config,
+                fields,
+                nullable_fields,
+                feature_names,
+                use_enhanced_features
+            )
+            futures.append(future)
+        
+        # Process results with progress bar
+        for future in tqdm(futures, desc="Engineering features"):
+            result = future.result()
+            if result is not None:
+                features, label, enhanced_names = result
+                processed_pairs.append((features, label))
+                
+                # Update feature names if this is the first processed pair with enhanced features
+                if use_enhanced_features and len(feature_names) < len(enhanced_names):
+                    feature_names = enhanced_names
+            else:
+                skipped_count += 1
+    
+    # Split results into X and y
+    logger.info(f"Processed {len(processed_pairs)} pairs ({skipped_count} pairs skipped)")
+    
+    if not processed_pairs:
+        logger.error("No valid pairs processed!")
+        return np.array([]), np.array([])
+    
+    X = [pair[0] for pair in processed_pairs]
+    y = [pair[1] for pair in processed_pairs]
+    
+    # Ensure all feature vectors have the same length (if using enhanced features)
+    if use_enhanced_features and len(X) > 0:
+        max_length = max(len(features) for features in X)
+        
+        # Pad shorter vectors
+        for i in range(len(X)):
+            if len(X[i]) < max_length:
+                X[i] = X[i] + [0.0] * (max_length - len(X[i]))
+                
+        # Ensure feature names list matches
+        if len(feature_names) < max_length:
+            for i in range(len(feature_names), max_length):
+                feature_names.append(f"feature_{i}")
+    
+    # Calculate total time
+    total_time = time.time() - total_start_time
+    
+    # Log timing statistics
+    logger.info("====== FEATURE ENGINEERING PROFILING RESULTS ======")
+    logger.info(f"Total time: {total_time:.2f}s for {len(record_pairs)} pairs ({len(record_pairs)/total_time:.1f} pairs/sec)")
+    logger.info(f"Bulk imputation time: {timings['bulk_imputation']:.2f}s")
+    
+    # Log feature dimensions
+    logger.info(f"Generated {len(X)} feature vectors with {len(feature_names)} features each")
     
     # Store feature names in config for later use
     config["feature_names"] = feature_names
     
+    logger.info("====== FEATURE ENGINEERING COMPLETE ======")
+    
+    # Convert to numpy arrays
     return np.array(X), np.array(y)
 
 def train_classifier(
@@ -361,15 +540,15 @@ def train_classifier(
         Trained classifier
     """
     # Split data into train/test sets
-    random_seed = config.get("random_seed", 42)
-    test_size = 1 - config.get("train_test_split", 0.8)
+    logger.info(f"Training on {X.shape[0]} samples with {X.shape[1]} features")
     
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=test_size, random_state=random_seed, stratify=y
+    # Initialize and train classifier
+    classifier = LogisticRegressionClassifier(
+        learning_rate=config.get("learning_rate", 0.01),
+        num_iterations=config.get("num_iterations", 1000),
+        regularization=config.get("regularization", 0.01)
     )
-    
-    logger.info(f"Training set: {X_train.shape[0]} samples, Test set: {X_test.shape[0]} samples")
-    logger.info(f"Feature vector dimension: {X_train.shape[1]}")
+    logger.info(f"Feature vector dimension: {X.shape[1]}")
     
     # Initialize and train classifier
     classifier = LogisticRegressionClassifier(
@@ -378,16 +557,16 @@ def train_classifier(
         regularization=config.get("regularization", 0.01)
     )
     
-    classifier.fit(X_train, y_train)
+    classifier.fit(X, y)
     
     # Evaluate on test set
-    y_pred = classifier.predict(X_test)
+    # y_pred = classifier.predict(X_test)
     
-    precision = precision_score(y_test, y_pred)
-    recall = recall_score(y_test, y_pred)
-    f1 = f1_score(y_test, y_pred)
+    # precision = precision_score(y_test, y_pred)
+    # recall = recall_score(y_test, y_pred)
+    # f1 = f1_score(y_test, y_pred)
     
-    logger.info(f"Test performance: Precision={precision:.4f}, Recall={recall:.4f}, F1={f1:.4f}")
+    # logger.info(f"Test performance: Precision={precision:.4f}, Recall={recall:.4f}, F1={f1:.4f}")
     
     # Save model
     save_checkpoint("classifier.pkl", classifier, config)
@@ -601,17 +780,6 @@ def classify_and_cluster(
 ) -> List[Dict[str, Any]]:
     """
     Classify record pairs and cluster entities.
-    
-    Args:
-        record_field_hashes: Dictionary of record ID → {field → hash}
-        unique_strings: Dictionary of hash → string value
-        embeddings: Dictionary of hash → embedding vector
-        classifier: Trained classifier
-        weaviate_client: Weaviate client
-        config: Configuration dictionary
-        
-    Returns:
-        List of entity clusters
     """
     # Update config for enhanced date processing if available
     if INTEGRATION_AVAILABLE:
@@ -646,11 +814,14 @@ def classify_and_cluster(
     
     processed_pairs = set()  # Track processed pairs to avoid duplicates
     
+    # Collect all candidate pairs first before processing
+    all_candidate_pairs = []
+    
     for i in range(0, len(record_ids), batch_size):
         batch_ids = record_ids[i:i+batch_size]
         logger.info(f"Processing batch {i//batch_size + 1}/{(len(record_ids)-1)//batch_size + 1}")
         
-        # Process each record in the batch
+        # Process each record in the batch to find candidates
         for record_id in tqdm(batch_ids, desc="Finding candidates"):
             # Get person hash for this record
             person_hash = record_field_hashes.get(record_id, {}).get('person', "NULL")
@@ -673,61 +844,71 @@ def classify_and_cluster(
             candidate_hashes = [candidate['hash'] for candidate in candidates]
             
             # Find records with these person hashes
-            candidate_ids = []
             for candidate_hash in candidate_hashes:
                 for rid, fields in record_field_hashes.items():
                     if fields.get('person') == candidate_hash and rid != record_id:
-                        candidate_ids.append(rid)
+                        # Create a candidate pair
+                        pair_key = tuple(sorted([record_id, rid]))
+                        
+                        # Skip if this pair has been processed
+                        if pair_key in processed_pairs:
+                            continue
+                        
+                        processed_pairs.add(pair_key)
+                        all_candidate_pairs.append((record_id, rid, None))  # Label doesn't matter here
+        
+        # Process all candidate pairs for this batch in one go
+        logger.info(f"Found {len(all_candidate_pairs)} candidate pairs to classify")
+        
+        # Skip if no pairs to process
+        if not all_candidate_pairs:
+            logger.info("No candidate pairs to process in this batch")
+            continue
             
-            # Classify each unique pair
-            for candidate_id in candidate_ids:
-                # Skip if this pair has been processed
-                pair_key = tuple(sorted([record_id, candidate_id]))
-                if pair_key in processed_pairs:
-                    continue
+        # Generate features and classify all pairs at once
+        X, _ = engineer_features(
+            all_candidate_pairs,
+            record_field_hashes,
+            unique_strings,
+            embeddings,
+            weaviate_client,
+            config
+        )
+        
+        # Classify all pairs
+        probabilities = classifier.predict_proba(X)
+        
+        # Process classification results
+        for idx, ((id1, id2, _), probability) in enumerate(zip(all_candidate_pairs, probabilities)):
+            # Add edge to graph if probability exceeds threshold
+            if probability >= confidence_threshold:
+                G.add_edge(id1, id2, weight=probability)
+            else:
+                # Check for exact match with life dates (strong signal)
+                person_str1 = unique_strings.get(record_field_hashes.get(id1, {}).get('person', "NULL"), "")
+                person_str2 = unique_strings.get(record_field_hashes.get(id2, {}).get('person', "NULL"), "")
                 
-                processed_pairs.add(pair_key)
+                has_life_dates1 = bool(re.search(r'\d{4}-\d{4}', person_str1))
+                has_life_dates2 = bool(re.search(r'\d{4}-\d{4}', person_str2))
+                exact_match_with_dates = person_str1 == person_str2 and (has_life_dates1 or has_life_dates2)
                 
-                # Generate feature vector for this pair
-                features = engineer_features(
-                    [(record_id, candidate_id, None)],  # Label doesn't matter here
-                    record_field_hashes,
-                    unique_strings,
-                    embeddings,
-                    weaviate_client,
-                    config
-                )[0]
-                
-                if len(features) == 0:
-                    continue
-                
-                # Classify
-                probability = float(classifier.predict_proba(features)[0])
-                
-                # Add edge to graph if probability exceeds threshold
-                if probability >= confidence_threshold:
-                    G.add_edge(record_id, candidate_id, weight=probability)
-                else:
-                    # Check for exact match with life dates (strong signal)
-                    person_str1 = unique_strings.get(record_field_hashes.get(record_id, {}).get('person', "NULL"), "")
-                    person_str2 = unique_strings.get(record_field_hashes.get(candidate_id, {}).get('person', "NULL"), "")
+                if exact_match_with_dates:
+                    # Override classifier decision
+                    G.add_edge(id1, id2, weight=0.95)
+                elif (0.5 <= probability < confidence_threshold) and llm_client:
+                    # Ambiguous case, try LLM fallback
+                    record1 = unique_strings.get(record_field_hashes.get(id1, {}).get('record', "NULL"), "")
+                    record2 = unique_strings.get(record_field_hashes.get(id2, {}).get('record', "NULL"), "")
                     
-                    has_life_dates1 = bool(re.search(r'\d{4}-\d{4}', person_str1))
-                    has_life_dates2 = bool(re.search(r'\d{4}-\d{4}', person_str2))
-                    exact_match_with_dates = person_str1 == person_str2 and (has_life_dates1 or has_life_dates2)
+                    llm_result = llm_fallback(record1, record2, llm_client, config)
                     
-                    if exact_match_with_dates:
-                        # Override classifier decision
-                        G.add_edge(record_id, candidate_id, weight=0.95)
-                    elif (0.5 <= probability < confidence_threshold) and llm_client:
-                        # Ambiguous case, try LLM fallback
-                        record1 = unique_strings.get(record_field_hashes.get(record_id, {}).get('record', "NULL"), "")
-                        record2 = unique_strings.get(record_field_hashes.get(candidate_id, {}).get('record', "NULL"), "")
-                        
-                        llm_result = llm_fallback(record1, record2, llm_client, config)
-                        
-                        if llm_result is not None and llm_result > 0.5:
-                            G.add_edge(record_id, candidate_id, weight=llm_result)
+                    if llm_result is not None and llm_result > 0.5:
+                        G.add_edge(id1, id2, weight=llm_result)
+        
+        # Clear the list of candidate pairs for the next batch
+        all_candidate_pairs = []
+    
+    # Rest of clustering code remains the same...
     
     # Apply community detection for clustering
     logger.info("Applying community detection algorithm")

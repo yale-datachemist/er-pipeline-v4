@@ -44,5 +44,11 @@
   
   "ground_truth_path": "data/input/ground_truth.csv",
   
-  "log_level": "INFO"
+  "log_level": "INFO",
+  "parallel_workers": 8,
+  "nullable_fields_to_use": ["attribution", "provision", "subjects", "genres", "relatedWork"],
+  "skip_bulk_imputation": true
+
+  
 }
+

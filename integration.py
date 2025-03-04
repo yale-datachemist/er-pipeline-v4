@@ -13,6 +13,50 @@ from typing import Dict, List, Any, Tuple, Optional, Set
 # Configure logging
 logger = logging.getLogger(__name__)
 
+# At the top of integration.py, add:
+_ENHANCED_DATE_PROCESSING_AVAILABLE = None  # Global cache variable
+
+def check_enhanced_date_processing_available() -> bool:
+    """
+    Check if the enhanced date processing module is available.
+    
+    Returns:
+        True if enhanced date processing is available, False otherwise
+    """
+    global _ENHANCED_DATE_PROCESSING_AVAILABLE
+    
+    # Return cached result if available
+    if _ENHANCED_DATE_PROCESSING_AVAILABLE is not None:
+        return _ENHANCED_DATE_PROCESSING_AVAILABLE
+    
+    try:
+        spec = importlib.util.find_spec('enhanced_date_processing')
+        if spec is None:
+            logger.warning("Enhanced date processing module not found.")
+            _ENHANCED_DATE_PROCESSING_AVAILABLE = False
+            return False
+        
+        # Try to import main functions to verify they exist
+        from enhanced_date_processing import (
+            extract_life_dates_enhanced,
+            extract_dates_from_provision,
+            analyze_temporal_relationship,
+            integrate_enhanced_dates_with_base_features
+        )
+        
+        # Only log once with reduced level
+        logger.debug("Enhanced date processing module is available.")
+        _ENHANCED_DATE_PROCESSING_AVAILABLE = True
+        return True
+    except ImportError as e:
+        logger.warning(f"Error importing enhanced date processing: {e}")
+        _ENHANCED_DATE_PROCESSING_AVAILABLE = False
+        return False
+    except Exception as e:
+        logger.warning(f"Unexpected error checking enhanced date processing: {e}")
+        _ENHANCED_DATE_PROCESSING_AVAILABLE = False
+        return False
+
 def compare_year_compatibility(
     years: List[int],
     birth_year: Optional[int] = None,
@@ -244,7 +288,7 @@ def check_enhanced_date_processing_available() -> bool:
             integrate_enhanced_dates_with_base_features
         )
         
-        logger.info("Enhanced date processing module is available.")
+        #logger.info("Enhanced date processing module is available.")
         return True
     except ImportError as e:
         logger.warning(f"Error importing enhanced date processing: {e}")
@@ -284,9 +328,12 @@ def update_config_for_enhanced_dates(config: Dict[str, Any]) -> Dict[str, Any]:
         if "fuzzy_year_threshold" not in updated_config:
             updated_config["fuzzy_year_threshold"] = 5
             
-        logger.info("Configuration updated to use enhanced date processing.")
+        # Only log this message once per configuration update
+        if config.get("use_enhanced_date_processing") != enhanced_available:
+            logger.info("Configuration updated to use enhanced date processing.")
     else:
-        logger.info("Using basic date processing - enhanced module not available.")
+        if config.get("use_enhanced_date_processing") != enhanced_available:
+            logger.info("Using basic date processing - enhanced module not available.")
     
     return updated_config
 

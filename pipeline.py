@@ -132,38 +132,52 @@ class EntityResolutionPipeline:
             # Step 4: Feature Engineering & Training
             self.logger.info("Step 4: Engineering features and training classifier")
             feature_start = time.time()
-            
+
+            # Load ground truth pairs
             ground_truth_pairs = load_ground_truth(self.config["ground_truth_path"])
-            
-            X, y = engineer_features(
-                ground_truth_pairs, 
+
+            # Split ground truth pairs BEFORE feature engineering
+            from sklearn.model_selection import train_test_split
+            train_pairs, test_pairs = train_test_split(
+                ground_truth_pairs,
+                test_size=1-self.config.get("train_test_split", 0.8),
+                random_state=self.config.get("random_seed", 42)
+            )
+
+            self.logger.info(f"Split into {len(train_pairs)} training pairs and {len(test_pairs)} test pairs")
+
+            # Only engineer features for training data
+            X_train, y_train = engineer_features(
+                train_pairs,  # Only use training pairs here!
                 record_field_hashes, 
                 unique_strings, 
                 embeddings, 
                 weaviate_client, 
                 self.config
             )
-            
+
+            # Train classifier
+            classifier = train_classifier(X_train, y_train, self.config)
+
             # Analyze feature engineering results
             if self.config.get("generate_analysis", True):
-                reporter.analyze_features(X, y)
-            
-            # Train classifier
-            classifier = train_classifier(X, y, self.config)
-            
+                reporter.analyze_features(X_train, y_train)
+
+            # Generate features for test set for evaluation
+            self.logger.info("Engineering features for test set...")
+            X_test, y_test = engineer_features(
+                test_pairs,
+                record_field_hashes,
+                unique_strings,
+                embeddings,
+                weaviate_client,
+                self.config
+            )
+
             stage_timings["feature_engineering_training"] = time.time() - feature_start
-            
+
             # Analyze classification results
             if self.config.get("generate_analysis", True):
-                # Split data for evaluation
-                from sklearn.model_selection import train_test_split
-                
-                X_train, X_test, y_train, y_test = train_test_split(
-                    X, y, 
-                    test_size=1-self.config.get("train_test_split", 0.8),
-                    random_state=self.config.get("random_seed", 42)
-                )
-                
                 reporter.analyze_classification(classifier, X_test, y_test)
             
             # Step 5: Classification & Clustering

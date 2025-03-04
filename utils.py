@@ -272,6 +272,37 @@ def save_checkpoint(file_path: str, data: Any, config: Dict[str, Any]) -> None:
     
     logging.info(f"Saved checkpoint: {full_path}")
 
+def batch_cosine_similarity(vectors1: List[np.ndarray], vectors2: List[np.ndarray]) -> np.ndarray:
+    """
+    Calculate cosine similarity between batches of vectors.
+    
+    Args:
+        vectors1: First batch of vectors
+        vectors2: Second batch of vectors
+        
+    Returns:
+        Array of similarity scores
+    """
+    # Convert to numpy arrays
+    v1 = np.array(vectors1)
+    v2 = np.array(vectors2)
+    
+    # Calculate dot product
+    dot_product = np.sum(v1 * v2, axis=1)
+    
+    # Calculate norms
+    norm1 = np.linalg.norm(v1, axis=1)
+    norm2 = np.linalg.norm(v2, axis=1)
+    
+    # Handle zero norms
+    denominator = norm1 * norm2
+    denominator[denominator == 0] = 1.0  # Avoid division by zero
+    
+    # Calculate similarity
+    similarity = dot_product / denominator
+    
+    return similarity
+
 if __name__ == "__main__":
     # Simple test to ensure the module loads correctly
     print("Utility module loaded successfully")
