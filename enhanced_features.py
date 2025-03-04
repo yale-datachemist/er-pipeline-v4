@@ -1159,6 +1159,6 @@ def enhance_feature_vector(
     enhanced_feature_names = list(enhanced_features_dict.keys())
     enhanced_feature_values = [enhanced_features_dict[name] for name in enhanced_feature_names]
     
-    # return enhanced_feature_values, enhanced_feature_names
+    return enhanced_feature_values, enhanced_feature_names
     #enhanced_feature_names = [get_enhanced_feature_description(name) for name in all_feature_names]
     #return final_features, enhanced_feature_names

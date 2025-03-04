@@ -366,7 +366,7 @@ def process_record_pair(
     # Enhance features if enabled
     if use_enhanced_features:
         try:
-            enhanced_features, enhanced_names = enhance_feature_vector(
+            result = enhance_feature_vector(
                 features, 
                 current_feature_names,
                 unique_strings, 
@@ -374,11 +374,18 @@ def process_record_pair(
                 id1, 
                 id2
             )
-            features = enhanced_features
-            current_feature_names = enhanced_names
+            
+            # Check if result is valid
+            if result is not None and isinstance(result, tuple) and len(result) == 2:
+                enhanced_features, enhanced_names = result
+                features = enhanced_features
+                current_feature_names = enhanced_names
+            else:
+                logger.warning(f"Invalid result from enhance_feature_vector: {result}")
         except Exception as e:
             # Log error but continue with basic features
             logger.warning(f"Error enhancing features: {e}")
+
     
     # Normalize feature vector if required
     if config.get("feature_normalization", True):
