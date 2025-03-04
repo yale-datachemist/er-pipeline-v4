@@ -856,15 +856,14 @@ def compare_provision_dates_without_life_dates(
     
     return features
 
-
 def generate_high_value_interaction_features(
     base_features: Dict[str, float]
 ) -> Dict[str, float]:
     """
     Generate only high-value interaction features for entity resolution.
     
-    This optimized version focuses on the most discriminative interaction features
-    for bibliographic data, reducing feature count and preventing overfitting.
+    This focused version creates only the most discriminative interaction features
+    for bibliographic data, improving matching precision without adding too many features.
     
     Args:
         base_features: Dictionary of base features
@@ -874,36 +873,30 @@ def generate_high_value_interaction_features(
     """
     interaction_features = {}
     
-    # 1. CRITICAL: Name + Temporal compatibility
-    # This is the most important interaction for bibliographic data
+    # 1. Name + Temporal compatibility
     if all(f in base_features for f in ['person_sim', 'temporal_overlap']):
-        # Multiply exact vector similarity with temporal compatibility
         interaction_features['name_temporal_interaction'] = (
             base_features['person_sim'] * base_features['temporal_overlap']
         )
     
     # 2. Person name string similarity reinforcement
-    # Strengthen the signal when both vector and string similarity agree
     if all(f in base_features for f in ['person_sim', 'person_lev_sim']):
         interaction_features['name_string_reinforcement'] = (
             base_features['person_sim'] * base_features['person_lev_sim']
         )
     
     # 3. Binary indicator for exact name + compatible dates
-    # Critical for catching obvious matches with high confidence
     if all(f in base_features for f in ['person_lev_sim', 'temporal_overlap']):
         exact_match_temporal = (base_features['person_lev_sim'] > 0.9) and (base_features['temporal_overlap'] > 0.5)
         interaction_features['exact_name_temporal_match'] = 1.0 if exact_match_temporal else 0.0
     
     # 4. Life dates indicator + person name
-    # Strong signal when life dates match and appear in name
     if all(f in base_features for f in ['has_life_dates', 'person_sim']):
         interaction_features['name_with_life_dates'] = (
             base_features['has_life_dates'] * base_features['person_sim']
         )
     
     # 5. Title-Person harmonic mean
-    # Better than simple multiplication for balancing the importance
     if all(f in base_features for f in ['person_sim', 'title_sim']):
         if base_features['person_sim'] > 0 and base_features['title_sim'] > 0:
             harmonic_mean = 2 * (base_features['person_sim'] * base_features['title_sim']) / (
@@ -914,26 +907,12 @@ def generate_high_value_interaction_features(
             interaction_features['person_title_harmonic'] = 0.0
     
     # 6. Role consistency + temporal compatibility
-    # Critical for handling posthumous publications
     if all(f in base_features for f in ['roles_sim', 'temporal_overlap']):
         interaction_features['role_temporal_interaction'] = (
             base_features['roles_sim'] * base_features['temporal_overlap']
         )
     
-    # 7. Asymmetric life dates handling (only if applicable)
-    # For when one record has life dates but the other doesn't
-    if ('has_asymmetric_life_dates' in base_features and
-            'asymmetry_compatibility' in base_features and
-            'person_sim' in base_features and
-            base_features['has_asymmetric_life_dates'] > 0):
-        
-        # Weight asymmetry compatibility by name similarity
-        interaction_features['asymmetry_name_weighting'] = (
-            base_features['asymmetry_compatibility'] * base_features['person_sim']
-        )
-    
-    # 8. Person name + squared temporal feature
-    # Emphasizes the importance of temporal compatibility
+    # 7. Person name + squared temporal feature
     if all(f in base_features for f in ['person_sim', 'temporal_overlap']):
         interaction_features['name_temporal_squared'] = (
             base_features['person_sim'] * (base_features['temporal_overlap'] ** 2)

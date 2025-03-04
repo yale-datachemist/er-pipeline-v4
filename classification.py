@@ -355,34 +355,41 @@ def process_record_pair(
     
     # Add temporal overlap indicator
     if years1 and years2:
-        has_overlap = any(y1 in years2 for y1 in years1)
-        features.append(1.0 if has_overlap else 0.0)
+        overlap = years1.intersection(years2)
+        union = years1.union(years2)
+        temporal_overlap = len(overlap) / len(union) if union else 0.5
+        features.append(temporal_overlap)
     else:
         features.append(0.5)  # Neutral when years can't be determined
         
     # Current feature names (without enhancement)
     current_feature_names = feature_names.copy()
     
-    # Determine which type of feature enhancement to use
-    use_enhanced_features = config.get("use_enhanced_features", False)
+    # Determine which feature enhancements to apply based on config
     interaction_features_only = config.get("interaction_features_only", False)
     
-    if interaction_features_only:
-        # Add only interaction features
+    # Convert features to dictionary for easier manipulation
+    base_features_dict = {name: value for name, value in zip(current_feature_names, features)}
+    
+    if interaction_features_only and not use_enhanced_features:
+        # Apply ONLY interaction features (no other enhancements)
+        logger.debug("Adding only interaction features")
         try:
-            features, current_feature_names = add_interaction_features_only(
-                features, 
-                current_feature_names,
-                unique_strings, 
-                record_field_hashes, 
-                id1, 
-                id2,
-                config
-            )
+            # Generate interaction features
+            interaction_features = generate_high_value_interaction_features(base_features_dict)
+            
+            # Add to base features
+            base_features_dict.update(interaction_features)
+            
+            # Update feature lists
+            current_feature_names = list(base_features_dict.keys())
+            features = [base_features_dict[name] for name in current_feature_names]
         except Exception as e:
             logger.warning(f"Error adding interaction features: {e}")
+    
     elif use_enhanced_features:
-        # Use the full feature enhancement
+        # Apply full enhanced feature set
+        logger.debug("Adding full enhanced feature set")
         try:
             result = enhance_feature_vector(
                 features, 
@@ -417,31 +424,20 @@ def engineer_features(
     embeddings: Dict[str, List[float]],
     weaviate_client: Any,
     config: Dict[str, Any]
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, List[str]]:
     """
     Generate feature vectors for record pairs using parallel processing.
 
      Returns:
         Tuple of (X, y, feature_names)
     """
-
     # Start overall timing
     total_start_time = time.time()
     logger.info("====== STARTING FEATURE ENGINEERING ======")
     
     # Update config if integration module is available
-    # if INTEGRATION_AVAILABLE:
-    #     config = update_config_for_enhanced_dates(config)
-
-    # Override configuration to disable enhanced date processing
-    config = config.copy()  # Create a copy to avoid modifying the original
-    config["use_enhanced_date_processing"] = False
-    config["enhanced_temporal_features"] = False
-    config["robust_date_handling"] = False
-    
-    # Keep interaction features enabled
-    config["use_enhanced_features"] = False
-    config["enhanced_feature_interactions"] = True
+    if INTEGRATION_AVAILABLE:
+        config = update_config_for_enhanced_dates(config)
     
     # Initialize profiling dictionaries
     timings = defaultdict(float)
@@ -455,8 +451,13 @@ def engineer_features(
     nullable_fields = config.get("nullable_fields_to_use", 
                                 ['attribution', 'provision', 'subjects', 'genres', 'relatedWork'])
     
+    # Check for interaction features only mode
+    interaction_features_only = config.get("interaction_features_only", False)
+    if interaction_features_only:
+        logger.info("Using interaction features only mode")
+    
     # Use enhanced features if enabled
-    use_enhanced_features = config.get("use_enhanced_features", True)
+    use_enhanced_features = config.get("use_enhanced_features", False)
     
     # Pre-impute common null fields
     logger.info("Performing bulk imputation for common fields...")
@@ -473,11 +474,6 @@ def engineer_features(
     # Maximum number of threads
     max_workers = config.get("parallel_workers", min(8, os.cpu_count() or 4))
     logger.info(f"Processing {len(record_pairs)} record pairs using {max_workers} parallel workers")
-    
-    # Create a thread-local Weaviate client for each worker
-    # This avoids connection closed errors when multiple threads use the same client
-    def get_worker_client():
-        return connect_to_weaviate(config)
     
     # Process in parallel
     processed_pairs = []
@@ -513,7 +509,7 @@ def engineer_features(
                 processed_pairs.append((features, label))
                 
                 # Update feature names if this is the first processed pair with enhanced features
-                if use_enhanced_features and len(feature_names) < len(enhanced_names):
+                if len(feature_names) < len(enhanced_names):
                     feature_names = enhanced_names
             else:
                 skipped_count += 1
@@ -523,13 +519,13 @@ def engineer_features(
     
     if not processed_pairs:
         logger.error("No valid pairs processed!")
-        return np.array([]), np.array([])
+        return np.array([]), np.array([]), []
     
     X = [pair[0] for pair in processed_pairs]
     y = [pair[1] for pair in processed_pairs]
     
     # Ensure all feature vectors have the same length (if using enhanced features)
-    if use_enhanced_features and len(X) > 0:
+    if (use_enhanced_features or interaction_features_only) and len(X) > 0:
         max_length = max(len(features) for features in X)
         
         # Pad shorter vectors
@@ -552,6 +548,7 @@ def engineer_features(
     
     # Log feature dimensions
     logger.info(f"Generated {len(X)} feature vectors with {len(feature_names)} features each")
+    logger.info(f"Feature names: {feature_names}")
     
     # Store feature names in config for later use
     config["feature_names"] = feature_names
@@ -1168,10 +1165,18 @@ def generate_misclassified_report(
             'person1', 'person2',
             'title1', 'title2',
             'provision1', 'provision2',
-            'true_label', 'predicted_label'
+            'true_label', 'predicted_label', 'predicted_prob'
         ]
-        # Add feature names to headers
-        headers.extend(feature_names)
+        # Add feature names to headers - ensure we use the actual feature names
+        # that match X_test columns, not a hardcoded list
+        if len(feature_names) >= X_test.shape[1]:
+            headers.extend(feature_names[:X_test.shape[1]])
+        else:
+            # If feature_names is too short, extend it with generic names
+            extended_names = feature_names.copy()
+            for i in range(len(feature_names), X_test.shape[1]):
+                extended_names.append(f"feature_{i}")
+            headers.extend(extended_names)
         
         writer.writerow(headers)
         
@@ -1199,7 +1204,9 @@ def generate_misclassified_report(
                     person1, person2,
                     title1, title2,
                     provision1, provision2,
-                    int(y_test[idx]), int(y_pred[idx])
+                    int(y_test[idx]), 
+                    int(y_pred[idx]),
+                    float(y_pred_proba[idx]) if 'y_pred_proba' in locals() else 0.0
                 ]
                 
                 # Add feature values
@@ -1221,16 +1228,6 @@ def generate_test_dataset_report(
 ) -> None:
     """
     Generate a complete report of the test dataset with feature vectors.
-    
-    Args:
-        X_test: Test feature matrix
-        y_test: True labels
-        y_pred: Predicted labels
-        test_pairs: Original test record pairs
-        record_field_hashes: Record field hashes
-        unique_strings: Dictionary of hash → string value
-        feature_names: Names of features
-        output_dir: Directory to save report
     """
     # Create CSV file
     csv_path = os.path.join(output_dir, "test_dataset_complete.csv")
@@ -1243,8 +1240,16 @@ def generate_test_dataset_report(
             'person1', 'person2',
             'true_label', 'predicted_label', 'is_correct'
         ]
-        # Add feature names to headers
-        headers.extend(feature_names)
+        
+        # Add feature names to headers - ensure we use the actual feature names
+        if len(feature_names) >= X_test.shape[1]:
+            headers.extend(feature_names[:X_test.shape[1]])
+        else:
+            # If feature_names is too short, extend it with generic names
+            extended_names = feature_names.copy()
+            for i in range(len(feature_names), X_test.shape[1]):
+                extended_names.append(f"feature_{i}")
+            headers.extend(extended_names)
         
         writer.writerow(headers)
         
@@ -1275,7 +1280,7 @@ def generate_test_dataset_report(
                 writer.writerow(row)
     
     logger.info(f"Saved complete test dataset report with {len(test_pairs)} pairs to {csv_path}")
-
+    
 def add_interaction_features_only(
     base_features: List[float],
     feature_names: List[str],
@@ -1315,6 +1320,8 @@ def add_interaction_features_only(
     enhanced_feature_values = [enhanced_features_dict[name] for name in enhanced_feature_names]
     
     return enhanced_feature_values, enhanced_feature_names
+
+
 
 if __name__ == "__main__":
     # Simple test to ensure the module loads correctly
